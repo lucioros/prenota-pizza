@@ -16,6 +16,7 @@
   </div>
 </header>
 <main class="wrap" id="main"></main>
+<div id="modal"></div>
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -27,6 +28,10 @@ let D = { formati: [], impasti: [], ingredienti: [], pizze: [], pi: [], stripe: 
 let visti = null, stripeBusy = false;
 let clienti = [], topPers = [], filtroCli = 'tutti', cercaCli = '';
 let authMode = 'login', authMsg = '', authBusy = false;
+// ruolo: 'gestore' = titolare (vede tutto), 'banco' = tablet del banco (solo la coda)
+let RUOLO = null, addetti = [], accessi = [], pinMod = null, prod = null, periodo = 'oggi';
+const TITOLARE = () => RUOLO === 'gestore';
+const nomeAddetto = id => addetti.find(a => a.id === id)?.nome || '';
 
 /* ---------- accesso ---------- */
 async function avvio() {
@@ -36,8 +41,8 @@ async function avvio() {
   const { data: ruoli, error } = await sb.from('staff').select('ruolo, pizzerie(*)').eq('user_id', utente.id);
   if (error) { toast(msgErr(error), true); return render(); }
   const r = ruoli.find(x => x.pizzerie.slug === SLUG) || ruoli[0];
-  P = r ? r.pizzerie : null;
-  if (P) { await Promise.all([caricaOrdini(), caricaImpostazioni()]); ascolta(); }
+  P = r ? r.pizzerie : null; RUOLO = r ? r.ruolo : null;
+  if (P) { await Promise.all([caricaOrdini(), caricaAddetti(), TITOLARE() ? caricaImpostazioni() : null]); ascolta(); }
   render();
   const st = params.get('stripe');
   if (P && st) {
@@ -80,6 +85,69 @@ async function inviaAuth(e) {
     render(); $('#a-email').value = email; return;
   }
   authMsg = ''; avvio();
+}
+
+/* ---------- pizzaioli ---------- */
+async function caricaAddetti() {
+  const { data, error } = await sb.from('addetti').select('id, pizzeria_id, nome, attivo').eq('pizzeria_id', P.id).order('nome');
+  if (error) { toast(msgErr(error), true); return; }
+  addetti = data; D.addetti = addetti;
+}
+// Finestra "Chi inizia?": il pizzaiolo sceglie il suo nome e scrive il PIN
+function renderPin() {
+  const m = $('#modal');
+  if (!pinMod) { m.innerHTML = ''; return; }
+  const attivi = addetti.filter(a => a.attivo);
+  const corpo = !pinMod.addetto
+    ? `<span class="label">Ordine #${pinMod.numero}</span><h2 class="pin-h">Chi lo prepara?</h2>
+       ${attivi.length ? `<div class="pin-nomi">${attivi.map(a => `<button class="pin-nome" data-act="pinChi" data-id="${a.id}">${esc(a.nome)}</button>`).join('')}</div>`
+         : `<p class="muted">Non ci sono ancora pizzaioli. ${TITOLARE() ? 'Aggiungili in Impostazioni → Pizzaioli e accessi.' : 'Chiedi al titolare di aggiungerli.'}</p>`}`
+    : `<span class="label">Ordine #${pinMod.numero} · ${esc(nomeAddetto(pinMod.addetto))}</span><h2 class="pin-h">Scrivi il tuo PIN</h2>
+       <div class="pin-dots" aria-label="${pinMod.pin.length} cifre inserite">${Array.from({ length: 6 }, (_, i) => `<i class="${i < pinMod.pin.length ? 'on' : ''}"></i>`).join('')}</div>
+       ${pinMod.err ? `<span class="err-msg">${esc(pinMod.err)}</span>` : ''}
+       <div class="pin-pad">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `<button data-act="pinNum" data-n="${n}">${n}</button>`).join('')}
+         <button data-act="pinCanc" aria-label="Cancella">⌫</button><button data-act="pinNum" data-n="0">0</button>
+         <button class="ok" data-act="pinOk" ${pinMod.pin.length >= 4 && !pinMod.busy ? '' : 'disabled'} aria-label="Conferma">✓</button></div>
+       <button class="linkbtn" data-act="pinIndietro">Non sono io</button>`;
+  m.innerHTML = `<div class="overlay" data-act="pinFuori"><div class="done pin-box" role="dialog" aria-label="Chi inizia l'ordine">${corpo}
+    <button class="close pin-x" data-act="pinChiudi" aria-label="Chiudi">×</button></div></div>`;
+}
+
+/* ---------- produttività (solo titolare) ---------- */
+function intervallo(k) {
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0); const oggi = d0.getTime();
+  return { oggi: [oggi, oggi + DAY], ieri: [oggi - DAY, oggi], sett: [oggi - 6 * DAY, oggi + DAY], mese: [oggi - 29 * DAY, oggi + DAY] }[k];
+}
+async function caricaProd() {
+  const [da, a] = intervallo(periodo);
+  const { data, error } = await sb.rpc('produttivita', { p_pizzeria: P.id, p_da: new Date(da).toISOString(), p_a: new Date(a).toISOString() });
+  if (error) { toast(msgErr(error), true); prod = null; return; }
+  prod = data;
+}
+function vProd() {
+  const per = [['oggi', 'Oggi'], ['ieri', 'Ieri'], ['sett', 'Ultimi 7 giorni'], ['mese', 'Ultimi 30 giorni']];
+  const nav = `<div class="chips">${per.map(([k, l]) => `<button class="chip" data-act="periodo" data-v="${k}" aria-pressed="${periodo === k}">${l}</button>`).join('')}</div>`;
+  if (!prod) return `<h1 class="page-h">Produttività</h1>${nav}<div class="empty" style="margin-top:14px">Carico i dati…</div>`;
+  const t = prod.totale, max = Math.max(1, ...prod.addetti.map(a => +a.pizze));
+  const fmtMin = v => v == null ? '—' : String(v).replace('.', ',') + ' min';
+  const tile = (n, l) => `<div class="tile panel"><span class="mono">${n}</span><span class="label">${l}</span></div>`;
+  return `<div class="coda-bar"><h1 class="page-h">Produttività</h1></div>
+    <p class="muted" style="margin:0 0 12px;max-width:65ch">Conta gli ordini iniziati nel periodo da ogni pizzaiolo, con il tempo da "Inizia" a "Segna pronto". In ritardo: ordini pronti dopo l'orario promesso al cliente.</p>
+    ${nav}
+    <div class="tiles">${tile(t.ordini, 'ordini')}${tile(t.pizze, 'pizze')}${tile(fmtMin(t.minuti_medi), 'tempo medio per ordine')}${tile(t.in_ritardo, 'in ritardo')}${tile(eur(t.incasso), 'incasso')}</div>
+    <h2 class="sec-h">Per pizzaiolo</h2>
+    ${prod.addetti.length ? `<div class="tbl-wrap"><table><thead><tr><th>Pizzaiolo</th><th>Pizze</th><th></th><th>Ordini</th><th>Tempo medio per ordine</th><th>Minuti per pizza</th><th>In ritardo</th></tr></thead><tbody>
+      ${prod.addetti.map(a => `<tr><td><b>${esc(a.nome)}</b></td><td class="mono">${a.pizze}</td>
+        <td style="width:30%"><div class="bar"><i style="width:${Math.round(a.pizze / max * 100)}%"></i></div></td>
+        <td class="mono">${a.ordini}</td><td class="mono">${fmtMin(a.minuti_medi)}</td><td class="mono">${fmtMin(a.minuti_per_pizza)}</td>
+        <td>${+a.in_ritardo ? `<span class="pill preparazione">${a.in_ritardo}</span>` : '<span class="muted">0</span>'}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">Nessun ordine iniziato in questo periodo.</div>'}
+    ${prod.ordini.length ? `<h2 class="sec-h">Ordini del periodo</h2><div class="tbl-wrap"><table><thead><tr><th>Ordine</th><th>Pizzaiolo</th><th>Pizze</th><th>Iniziato</th><th>Pronto</th><th>Durata</th><th>Ritiro promesso</th></tr></thead><tbody>
+      ${prod.ordini.slice(0, 60).map(o => `<tr><td class="mono">#${o.numero} <span class="muted">${esc(o.cliente)}</span></td><td>${esc(o.pizzaiolo || '—')}</td><td class="mono">${o.pizze}</td>
+        <td class="mono">${new Date(o.iniziato).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
+        <td class="mono">${o.pronto ? ora(o.pronto) : '—'}</td><td class="mono">${fmtMin(o.minuti)}</td>
+        <td class="mono">${ora(o.ritiro)}${o.pronto && new Date(o.pronto) > new Date(o.ritiro) ? ' <span class="pill preparazione">tardi</span>' : ''}</td></tr>`).join('')}
+    </tbody></table></div>` : ''}`;
 }
 
 /* ---------- coda ---------- */
@@ -131,6 +199,7 @@ function vCoda() {
     const mins = Math.round((new Date(o.ritiro) - now) / MIN);
     return `<article class="ticket ${o.stato}">
       <div class="top"><span class="n">#${o.numero}</span><span class="pill ${o.stato}">${nomi[o.stato]}</span></div>
+      ${o.preparato_da ? `<span class="chi">👨‍🍳 ${esc(nomeAddetto(o.preparato_da) || 'pizzaiolo')} · dalle ${ora(o.iniziato_il)}</span>` : ''}
       <div class="top"><span><b>${esc(o.nome_cliente)}</b> <span class="muted" style="font-size:12px">${o.canale === 'totem' ? 'totem' : 'online'}</span>${o.telefono ? `<br><span class="muted mono" style="font-size:12px">${esc(o.telefono)}</span>` : ''}</span>
         <span class="rit">${ora(o.ritiro)}<br><span class="muted" style="font-size:12px;font-family:var(--f-body)">${mins > 0 ? 'tra ' + mins + ' min' : mins === 0 ? 'adesso' : 'da ' + (-mins) + ' min'}</span></span></div>
       <ul>${o.righe_ordine.map(r => {
@@ -171,7 +240,7 @@ async function caricaImpostazioni() {
 const ingrDi = id => D.pi.filter(x => x.pizza_id === id).map(x => x.ingrediente_id);
 const nomeIngr = id => D.ingredienti.find(g => g.id === id)?.nome || '';
 
-const SCHEDE_IMP = [['generale', 'Pizzeria'], ['forno', 'Forno e formati'], ['listino', 'Listino'], ['ingredienti', 'Ingredienti e impasti'],
+const SCHEDE_IMP = [['generale', 'Pizzeria'], ['forno', 'Forno e formati'], ['persone', 'Pizzaioli e accessi'], ['listino', 'Listino'], ['ingredienti', 'Ingredienti e impasti'],
   ['pagamenti', 'Pagamenti'], ['offerte', 'Fedeltà e offerte'], ['whatsapp', 'Messaggi WhatsApp']];
 let impTab = lsGet('pz_imp_tab') || 'generale';
 function vImp() {
@@ -195,7 +264,10 @@ function vImp() {
   const linkCliente = `${base}?p=${encodeURIComponent(P.slug)}`, linkTotem = `${linkCliente}&totem=1`;
   const sezioni = {
     generale: () => `<section class="set-sec"><h2 class="sec-h">Dati della pizzeria</h2>
-      <div class="grid-gen">${gen('nome', 'Nome pizzeria')}${gen('apertura', 'Apertura', 'time')}${gen('chiusura', 'Chiusura', 'time')}</div></section>
+      <div class="grid-gen">${gen('nome', 'Nome pizzeria')}${gen('apertura', 'Apertura', 'time')}${gen('chiusura', 'Chiusura', 'time')}${gen('giorni_prenotazione', 'Prenotazioni fino a quanti giorni prima', 'number', 'min="0" max="60"')}</div>
+      <div class="field" style="margin-top:12px"><span class="label">Giorno di chiusura settimanale</span>
+        <div class="chips">${['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'].map((g, i) => `<button class="chip" data-act="chiusoGiorno" data-g="${i}" aria-pressed="${(P.giorni_chiusura || []).includes(i)}">${g}</button>`).join('')}</div>
+        <span class="muted" style="font-size:13px">Nei giorni selezionati i clienti non possono scegliere il ritiro.</span></div></section>
       <section class="set-sec"><h2 class="sec-h">Link da condividere</h2>
       <p class="muted">Il primo va sui social, su Google e sui volantini. Il secondo si apre sul totem nel locale.</p>
       <div class="links"><div class="field"><span class="label">Ordini online</span><code class="sel">${esc(linkCliente)}</code></div>
@@ -221,7 +293,11 @@ function vImp() {
       <button class="ghost add" data-act="add" data-t="pizze">+ Aggiungi pizza</button></section>
       <section class="set-sec"><h2 class="sec-h">Pizza personalizzata</h2>
       <p class="muted">Il cliente parte da questa base e aggiunge gli ingredienti che vuole.</p>
-      <div class="grid-gen">${gen('prezzo_base_pers', 'Prezzo base (€)', 'number')}${gen('descrizione_base', 'Base sempre inclusa')}</div></section>`,
+      <div class="grid-gen">${gen('prezzo_base_pers', 'Prezzo base (€)', 'number')}${gen('descrizione_base', 'Base sempre inclusa')}</div></section>
+      <section class="set-sec"><h2 class="sec-h">Ingredienti tolti</h2>
+      <label class="check"><input type="checkbox" id="p-sconto_tolti" data-t="pizzerie" data-id="${P.id}" data-f="sconto_tolti" ${P.sconto_tolti ? 'checked' : ''}>
+        <span>Se il cliente toglie un ingrediente da una pizza del listino, il prezzo scende del costo di quell'ingrediente</span></label></section>`,
+    persone: vPersone,
     ingredienti: () => `<section class="set-sec"><h2 class="sec-h">Ingredienti</h2>
       <p class="muted">Il prezzo è quello dell'aggiunta su una pizza normale. Togli la spunta quando un ingrediente finisce: sparisce dalle scelte e le pizze che lo usano risultano non disponibili.</p>
       <div class="tbl-wrap"><table><thead><tr><th>Icona</th><th>Nome</th><th>Categoria</th><th>Prezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${ingr}</tbody></table></div>
@@ -352,19 +428,48 @@ function vClienti() {
     ${top}`;
 }
 
+async function caricaAccessi() {
+  const { data, error } = await sb.rpc('elenco_accessi', { p_pizzeria: P.id });
+  if (error) { toast(msgErr(error), true); return; }
+  accessi = data || [];
+}
+function vPersone() {
+  if (!vPersone.caricato) { vPersone.caricato = true; caricaAccessi().then(render); }
+  const righe = addetti.map(a => `<tr>
+    <td><input type="text" id="addetti-${a.id}-nome" data-t="addetti" data-id="${a.id}" data-f="nome" value="${esc(a.nome)}" aria-label="nome"></td>
+    <td><div class="pin-set"><input type="password" id="pin-${a.id}" inputmode="numeric" maxlength="6" placeholder="nuovo PIN" aria-label="nuovo PIN di ${esc(a.nome)}" autocomplete="off"><button class="ghost small" data-act="setPin" data-id="${a.id}">Salva PIN</button></div></td>
+    <td class="c"><input type="checkbox" data-t="addetti" data-id="${a.id}" data-f="attivo" ${a.attivo ? 'checked' : ''} aria-label="attivo"></td>
+    <td class="c"><button class="del ${conferma === a.id ? 'sure' : ''}" data-act="del" data-t="addetti" data-id="${a.id}" aria-label="Elimina">${conferma === a.id ? 'Elimina?' : '×'}</button></td></tr>`).join('');
+  const acc = accessi.map(x => `<tr><td>${esc(x.email)}${x.io ? ' <span class="muted">(tu)</span>' : ''}</td>
+    <td>${x.ruolo === 'gestore' ? 'Titolare' : 'Banco'}</td>
+    <td class="c">${x.io ? '' : `<button class="del ${conferma === x.user_id ? 'sure' : ''}" data-act="delAccesso" data-id="${x.user_id}" aria-label="Togli accesso">${conferma === x.user_id ? 'Togliere?' : '×'}</button>`}</td></tr>`).join('');
+  return `<section class="set-sec"><h2 class="sec-h">Pizzaioli</h2>
+    <p class="muted">Chi prepara le pizze. Quando un ordine passa a "Inizia", il pizzaiolo sceglie il suo nome e scrive il suo PIN: così sai chi ha preparato cosa e trovi i numeri in Produttività. Il PIN non si può leggere, solo cambiare.</p>
+    <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>PIN</th><th>Attivo</th><th></th></tr></thead><tbody>${righe || '<tr><td colspan="4" class="muted">Nessun pizzaiolo.</td></tr>'}</tbody></table></div>
+    <button class="ghost add" data-act="addAddetto">+ Aggiungi pizzaiolo</button></section>
+    <section class="set-sec"><h2 class="sec-h">Accessi all'area pizzeria</h2>
+    <p class="muted">Il titolare vede tutto. Un accesso Banco, per esempio il tablet vicino al forno, vede solo la coda: niente impostazioni, clienti, incassi o produttività. Chi deve entrare prima si registra in questa pagina, poi lo aggiungi qui con la sua email.</p>
+    <div class="tbl-wrap"><table><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead><tbody>${acc || '<tr><td colspan="3" class="muted">Carico…</td></tr>'}</tbody></table></div>
+    <div class="acc-add"><input id="acc-email" type="email" placeholder="email dell'account" aria-label="email">
+      <select id="acc-ruolo" aria-label="ruolo"><option value="banco">Banco (solo coda)</option><option value="gestore">Titolare</option></select>
+      <button class="ghost" data-act="addAccesso">Aggiungi accesso</button></div></section>`;
+}
+
 /* ---------- vista ---------- */
 function render() {
   const t = (id, l) => `<button class="tab" data-act="view" data-v="${id}" aria-current="${view === id}">${l}</button>`;
   $('#brand').textContent = P ? P.nome : 'Prenota la Pizza';
   $('#logo').innerHTML = pizzaSVG([{ nome: 'Basilico' }], { seme: 'logo' });
-  $('#tabs').innerHTML = utente ? (P ? t('coda', 'Coda forno') + t('clienti', 'Clienti') + t('imp', 'Impostazioni') + `<a class="tab" href="./?p=${encodeURIComponent(P.slug)}" target="_blank" rel="noopener">Pagina ordini</a>` : '')
+  if (P && !TITOLARE()) view = 'coda';
+  $('#tabs').innerHTML = utente ? (P ? t('coda', 'Coda forno') + (TITOLARE() ? t('clienti', 'Clienti') + t('prod', 'Produttività') + t('imp', 'Impostazioni') : '') + `<a class="tab" href="./?p=${encodeURIComponent(P.slug)}" target="_blank" rel="noopener">Pagina ordini</a>` : '')
     + `<button class="tab totem-btn" data-act="esci">Esci</button>` : '';
   if (!utente) { $('#main').innerHTML = vLogin(); $('#auth-form').addEventListener('submit', inviaAuth); return; }
   if (!P) { $('#main').innerHTML = `<div class="auth panel"><h1 class="page-h" style="font-size:26px">Account non ancora abilitato</h1>
     <p>Hai effettuato l'accesso come <b>${esc(utente.email)}</b>, ma questo account non è ancora collegato a nessuna pizzeria.</p>
     <p class="muted">Chiedi di abilitarlo, poi ricarica la pagina.</p><button class="ghost" data-act="ricarica">Ricarica</button></div>`; return; }
   const y = scrollY;
-  $('#main').innerHTML = view === 'imp' ? vImp() : view === 'clienti' ? vClienti() : vCoda();
+  $('#main').innerHTML = view === 'imp' ? vImp() : view === 'clienti' ? vClienti() : view === 'prod' ? vProd() : vCoda();
+  renderPin();
   if (view !== 'coda') scrollTo(0, y);
 }
 
@@ -390,7 +495,51 @@ const ACT = {
     }
     await aggiornaStripe(); stripeBusy = false; render();
   },
-  view: async d => { view = d.v; conferma = null; if (d.v === 'clienti') await caricaClienti(); render(); scrollTo(0, 0); },
+  view: async d => { view = d.v; conferma = null; if (d.v === 'clienti') await caricaClienti(); if (d.v === 'prod') { prod = null; render(); await caricaProd(); } render(); scrollTo(0, 0); },
+  periodo: async d => { periodo = d.v; prod = null; render(); await caricaProd(); render(); },
+  pinChi: d => { pinMod.addetto = d.id; pinMod.pin = ''; pinMod.err = ''; renderPin(); },
+  pinIndietro: () => { pinMod.addetto = null; pinMod.pin = ''; pinMod.err = ''; renderPin(); },
+  pinNum: d => { if (pinMod.pin.length < 6) pinMod.pin += d.n; pinMod.err = ''; renderPin(); },
+  pinCanc: () => { pinMod.pin = pinMod.pin.slice(0, -1); renderPin(); },
+  pinChiudi: () => { pinMod = null; renderPin(); },
+  pinFuori: (d, el, e) => { if (e.target === el) { pinMod = null; renderPin(); } },
+  pinOk: async () => {
+    pinMod.busy = true; renderPin();
+    const { data, error } = await sb.rpc('inizia_ordine', { p_ordine: pinMod.ordine, p_addetto: pinMod.addetto, p_pin: pinMod.pin });
+    if (error) { pinMod.busy = false; pinMod.pin = ''; pinMod.err = msgErr(error); return renderPin(); }
+    pinMod = null; await caricaOrdini(); render(); toast(`Ordine iniziato da ${data.nome}`);
+  },
+  chiusoGiorno: async d => {
+    const g = +d.g, arr = P.giorni_chiusura || [];
+    const nuovo = arr.includes(g) ? arr.filter(x => x !== g) : [...arr, g].sort();
+    if (await salva('pizzerie', P.id, { giorni_chiusura: nuovo })) { P.giorni_chiusura = nuovo; render(); }
+  },
+  addAddetto: async () => {
+    const { data, error } = await sb.from('addetti').insert({ pizzeria_id: P.id, nome: 'Nuovo pizzaiolo' }).select('id, pizzeria_id, nome, attivo').single();
+    if (error) return toast(msgErr(error), true);
+    addetti.push(data); render();
+    const el = document.getElementById(`addetti-${data.id}-nome`); el?.focus(); el?.select();
+  },
+  setPin: async d => {
+    const el = document.getElementById('pin-' + d.id), pin = (el?.value || '').trim();
+    const { error } = await sb.rpc('imposta_pin', { p_addetto: d.id, p_pin: pin });
+    if (error) return toast(msgErr(error), true);
+    el.value = ''; toast(`PIN salvato per ${nomeAddetto(d.id)}`);
+  },
+  addAccesso: async () => {
+    const email = $('#acc-email').value.trim(), ruolo = $('#acc-ruolo').value;
+    if (!email) return toast('Scrivi l\'email dell\'account', true);
+    const { error } = await sb.rpc('aggiungi_accesso', { p_pizzeria: P.id, p_email: email, p_ruolo: ruolo });
+    if (error) return toast(msgErr(error), true);
+    await caricaAccessi(); render(); toast('Accesso aggiunto');
+  },
+  delAccesso: async d => {
+    if (conferma !== d.id) { conferma = d.id; return render(); }
+    conferma = null;
+    const { error } = await sb.rpc('rimuovi_accesso', { p_pizzeria: P.id, p_user: d.id });
+    if (error) return toast(msgErr(error), true);
+    await caricaAccessi(); render(); toast('Accesso tolto');
+  },
   filtro: d => { filtroCli = d.v; render(); },
   impTab: d => { impTab = d.v; lsSet('pz_imp_tab', impTab); conferma = null; render(); scrollTo(0, 0); },
   abilita: async d => {
@@ -433,14 +582,15 @@ const ACT = {
   esci: async () => { if (canale) sb.removeChannel(canale); await sb.auth.signOut(); utente = null; P = null; render(); },
   ricarica: () => location.reload(),
   stato: async d => {
-    const { error } = await sb.from('ordini').update({ stato: d.s }).eq('id', d.id);
+    if (d.s === 'preparazione') { const o = ordini.find(x => x.id === d.id); pinMod = { ordine: d.id, numero: o?.numero, addetto: null, pin: '', err: '' }; return renderPin(); }
+    const { error } = await sb.rpc('cambia_stato', { p_ordine: d.id, p_stato: d.s });
     if (error) return toast(msgErr(error), true);
     await caricaOrdini(); render();
   },
   annulla: async d => {
     if (conferma !== d.id) { conferma = d.id; return render(); }
     conferma = null;
-    const { error } = await sb.from('ordini').update({ stato: 'annullato' }).eq('id', d.id);
+    const { error } = await sb.rpc('cambia_stato', { p_ordine: d.id, p_stato: 'annullato' });
     if (error) return toast(msgErr(error), true);
     await caricaOrdini(); render(); toast('Ordine annullato: i posti nel forno sono di nuovo liberi');
   },
@@ -462,6 +612,7 @@ const ACT = {
     const { error } = await sb.from(d.t).delete().eq('id', d.id);
     if (error) return toast(msgErr(error), true);
     D[d.t] = D[d.t].filter(x => x.id !== d.id);
+    if (d.t === 'addetti') addetti = D.addetti;
     if (d.t === 'ingredienti') D.pi = D.pi.filter(x => x.ingrediente_id !== d.id);
     render(); toast('Eliminato');
   },
@@ -479,8 +630,16 @@ const ACT = {
 };
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
-  if (conferma && !['annulla', 'del', 'delCli'].includes(el.dataset.act)) { conferma = null; }
+  if (conferma && !['annulla', 'del', 'delCli', 'delAccesso'].includes(el.dataset.act)) { conferma = null; }
   ACT[el.dataset.act]?.(el.dataset, el, e);
+});
+document.addEventListener('keydown', e => {
+  if (!pinMod) return;
+  if (e.key === 'Escape') { pinMod = null; return renderPin(); }
+  if (!pinMod.addetto) return;
+  if (/^[0-9]$/.test(e.key)) ACT.pinNum({ n: e.key });
+  else if (e.key === 'Backspace') ACT.pinCanc();
+  else if (e.key === 'Enter' && pinMod.pin.length >= 4) ACT.pinOk();
 });
 document.addEventListener('input', e => {
   if (e.target.id !== 'cerca-cli') return;
@@ -512,7 +671,7 @@ document.addEventListener('change', async e => {
   let val = t.type === 'checkbox' ? t.checked : t.type === 'number' ? parseFloat(String(t.value).replace(',', '.')) : t.value;
   if (t.type === 'number' && !isFinite(val)) { toast('Scrivi un numero', true); return; }
   if (t.type !== 'checkbox' && t.type !== 'number' && !String(val).trim()) { toast('Il campo non può restare vuoto', true); return; }
-  if (['posti', 'capacita_forno', 'margine_minuti', 'pizzaioli'].includes(t.dataset.f)) val = Math.round(val);
+  if (['posti', 'capacita_forno', 'margine_minuti', 'pizzaioli', 'giorni_prenotazione'].includes(t.dataset.f)) val = Math.round(val);
   const ok = await salva(t.dataset.t, t.dataset.id, { [t.dataset.f]: val });
   if (!ok) return;
   if (t.dataset.t === 'pizzerie') { P[t.dataset.f] = val; $('#brand').textContent = P.nome; if (t.dataset.f === 'capacita_forno') render(); }

@@ -12,7 +12,7 @@ Deno.serve(async (req) => {
 
     const { pizzeria_id, azione } = await req.json();
     const { data: st } = await admin.from('staff').select('ruolo').eq('pizzeria_id', pizzeria_id).eq('user_id', u.user.id).maybeSingle();
-    if (!st) return json({ error: 'Non autorizzato' }, 403);
+    if (!st || st.ruolo !== 'gestore') return json({ error: 'Solo il titolare può gestire i pagamenti' }, 403);
     const { data: pz } = await admin.from('pizzerie').select('id, nome, slug').eq('id', pizzeria_id).single();
     let { data: acc } = await admin.from('pizzerie_stripe').select('*').eq('pizzeria_id', pizzeria_id).maybeSingle();
 

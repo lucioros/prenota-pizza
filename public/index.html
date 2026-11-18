@@ -59,6 +59,11 @@ function prezzo(r) {
   p += +f.supplemento || 0;
   const im = IM(r.impasto); if (im) p += +im.sovrapprezzo || 0;
   p += r.aggiunte.reduce((a, id) => a + (+G(id)?.prezzo || 0) * (+f.moltiplicatore_aggiunte), 0);
+  // togliere un ingrediente della pizza ne scala il prezzo, se la pizzeria lo ha scelto
+  if (P.sconto_tolti && r.tipo === 'listino') {
+    const base = PZ(r.pizza)?.ingr || [];
+    p -= r.tolti.filter(id => base.includes(id)).reduce((a, id) => a + (+G(id)?.prezzo || 0) * (+f.moltiplicatore_aggiunte), 0);
+  }
   return r2(Math.max(0, p));
 }
 const nomeRiga = r => r.tipo === 'pers' ? 'Pizza personalizzata' : (PZ(r.pizza)?.nome || 'Pizza');
@@ -109,7 +114,7 @@ function vOrdina() {
       ${!manca && fam ? `<span class="muted mono" style="font-size:12px">${esc(fam.nome)} ${eur(+p.prezzo + +fam.supplemento)}</span>` : ''}</span>
     </button>`;
   }).join('');
-  const sv = servizio(P);
+  const g0 = giorniRitiro()[0], sv = g0 ? { aperto: g0.open <= Date.now(), start: g0.open } : { aperto: false, start: Date.now() };
   return `<div class="order-grid">
     <section style="min-width:0">
       <div class="hero"><div>
@@ -145,10 +150,30 @@ function vUltimo() {
     <b>${nomi[statoUltimo.stato] || ''}</b><span class="muted">Ritiro alle <span class="mono">${ora(statoUltimo.ritiro)}</span> · ${eur(statoUltimo.totale)}${statoUltimo.pagato ? ' · pagato' : ''}</span></div>`;
 }
 
+// giorni in cui si può ritirare: da oggi fino ai giorni di anticipo, saltando i giorni di chiusura
+function giorniRitiro() {
+  const out = [], now = Date.now(), chiusi = P.giorni_chiusura || [];
+  const dur = (((hm(P.chiusura, now) - hm(P.apertura, now)) % DAY) + DAY) % DAY || DAY;
+  const oggi = new Date(); oggi.setHours(12, 0, 0, 0);
+  for (let d = -1; d <= (+P.giorni_prenotazione || 0); d++) {
+    const g = new Date(oggi.getTime() + d * DAY);
+    if (chiusi.includes(g.getDay())) continue;
+    const open = hm(P.apertura, g), close = open + dur;
+    if (close <= now + 20 * MIN) continue;
+    const da = Math.max(open, Math.ceil((now + 30 * MIN) / (15 * MIN)) * 15 * MIN);
+    const k = `${g.getFullYear()}-${String(g.getMonth() + 1).padStart(2, '0')}-${String(g.getDate()).padStart(2, '0')}`;
+    const lab = d === 0 ? 'Oggi' : d === 1 ? 'Domani' : d === -1 ? 'Stasera' : g.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+    out.push({ k, lab: lab.charAt(0).toUpperCase() + lab.slice(1), open, close, da });
+  }
+  return out;
+}
+function opzioniGiorno(gg) { return gg.map((g, i) => `<option value="${g.k}" ${(cliente.giorno || gg[0].k) === g.k ? 'selected' : ''}>${esc(g.lab)}</option>`).join(''); }
 function opzioniOra() {
-  const sv = servizio(P);
-  let t = Math.ceil((sv.start + 30 * MIN) / (15 * MIN)) * 15 * MIN, out = '';
-  while (t <= sv.close) { out += `<option value="${t}" ${String(t) === cliente.quando ? 'selected' : ''}>${ora(t)}${giorno(t) ? ' · ' + giorno(t) : ''}</option>`; t += 15 * MIN; }
+  const gg = giorniRitiro(); if (!gg.length) return '';
+  const g = gg.find(x => x.k === cliente.giorno) || gg[0];
+  const primo = g === gg[0];
+  let t = Math.ceil(g.da / (15 * MIN)) * 15 * MIN, out = primo ? '<option value="">Appena pronta</option>' : '';
+  while (t <= g.close) { out += `<option value="${t}" ${String(t) === cliente.quando ? 'selected' : ''}>${ora(t)}</option>`; t += 15 * MIN; }
   return out;
 }
 function vCarrello() {
@@ -171,8 +196,10 @@ function vCarrello() {
       ${on('codici') ? `<div class="field"><label class="label" for="c-codice">Codice sconto</label><input id="c-codice" data-f="codice" value="${esc(fid.codice)}" autocapitalize="characters" maxlength="20"></div>` : ''}
       ${on('amico') ? `<div class="field"><label class="label" for="c-amico">Codice di un amico</label><input id="c-amico" data-f="amico" value="${esc(fid.amico)}" autocapitalize="characters" maxlength="10" placeholder="solo al primo ordine"></div>` : ''}
     </div>` : ''}
-    <div class="field"><label class="label" for="c-quando">Quando passi?</label>
-      <select id="c-quando" data-c="quando"><option value="">Appena pronta</option>${opzioniOra()}</select></div>
+    ${(() => { const gg = giorniRitiro(); return gg.length ? `<div class="quando">
+      <div class="field"><label class="label" for="c-giorno">Giorno del ritiro</label><select id="c-giorno" data-c="giorno">${opzioniGiorno(gg)}</select></div>
+      <div class="field"><label class="label" for="c-quando">Ora</label><select id="c-quando" data-c="quando">${opzioniOra()}</select></div></div>`
+      : '<div class="stima err">Al momento non ci sono giorni disponibili per il ritiro.</div>'; })()}
     ${vPagamento()}
     <div id="stima">${vStima()}</div>
     ${errore ? `<span class="err-msg">${esc(errore)}</span>` : ''}
@@ -307,7 +334,7 @@ function renderModal() {
   const fOpt = formati.map(f => `<button class="opt" data-act="b" data-k="formato" data-v="${f.id}" aria-pressed="${B.formato === f.id}">${esc(f.nome)}<small>${eur(prezzo({ ...B, formato: f.id }))} · ~${Math.round(+f.preparazione + +f.minuti)} min</small></button>`).join('');
   const iOpt = impasti.filter(i => i.disponibile).map(i => `<button class="opt" data-act="b" data-k="impasto" data-v="${i.id}" aria-pressed="${B.impasto === i.id}">${esc(i.nome)}<small>${+i.sovrapprezzo ? '+ ' + eur(i.sovrapprezzo) : 'incluso'}</small></button>`).join('');
   const f = F(B.formato), base = pz ? pz.ingr : [];
-  const inclusi = base.map(id => `<button class="chip ${B.tolti.includes(id) ? 'off' : ''}" data-act="tolto" data-g="${id}"><span class="ic" aria-hidden="true">${icona(G(id))}</span>${esc(G(id)?.nome)}</button>`).join('');
+  const inclusi = base.map(id => `<button class="chip ${B.tolti.includes(id) ? 'off' : ''}" data-act="tolto" data-g="${id}"><span class="ic" aria-hidden="true">${icona(G(id))}</span>${esc(G(id)?.nome)}${P.sconto_tolti ? `<small>−${eur((+G(id)?.prezzo || 0) * f.moltiplicatore_aggiunte)}</small>` : ''}</button>`).join('');
   const cats = [...new Set([...CATS, ...ingr.map(g => g.categoria)])];
   const gruppi = cats.map(c => {
     const gs = ingr.filter(g => g.categoria === c && !base.includes(g.id));
@@ -315,13 +342,13 @@ function renderModal() {
     return `<div class="grp"><span class="label">${esc(c)}</span><div class="chips">${gs.map(g => `<button class="chip" data-act="agg" data-g="${g.id}" aria-pressed="${B.aggiunte.includes(g.id)}" ${g.disponibile ? '' : 'disabled'}><span class="ic" aria-hidden="true">${icona(g)}</span>${esc(g.nome)}<small>${g.disponibile ? '+' + eur(g.prezzo * f.moltiplicatore_aggiunte) : 'finito'}</small></button>`).join('')}</div></div>`;
   }).join('');
   m.innerHTML = `<div class="overlay" data-act="fuori"><div class="sheet" role="dialog" aria-label="Componi la pizza">
-    <div class="sheet-h"><span class="anteprima" id="anteprima">${pizzaSVG(ingrRiga(B), { seme: pz ? pz.id : 'pers', rossa: rossa(), titolo: 'Anteprima' })}</span><div class="tit"><span class="label">${pz ? 'Dal listino' : 'Crea la tua pizza'}</span><h2>${esc(pz ? pz.nome : 'La tua pizza')}</h2>
+    <div class="sheet-h"><span class="anteprima" id="anteprima">${pizzaSVG(ingrRiga(B), { seme: pz ? pz.id : 'pers', rossa: rossa(), titolo: 'Anteprima' })}</span><div class="tit"><span class="label">${pz ? 'Dal listino' : 'Crea la tua pizza'}</span><h2>${esc(pz ? pz.nome : 'La tua pizza')}</h2><span class="prezzo-live mono" aria-live="polite">${eur(prezzo(B))}${B.qta > 1 ? ` × ${B.qta}` : ''}</span>
       <span class="muted">${esc(P.descrizione_base)}${pz && pz.ingr.length ? ', ' + pz.ingr.map(id => esc(G(id)?.nome)).join(', ').toLowerCase() : ''}</span></div>
       <button class="close" data-act="chiudi" aria-label="Chiudi">×</button></div>
     <div class="sheet-b">
       <div class="grp"><span class="label">Formato</span><div class="seg">${fOpt}</div></div>
       ${iOpt ? `<div class="grp"><span class="label">Impasto</span><div class="seg">${iOpt}</div></div>` : ''}
-      ${base.length ? `<div class="grp"><span class="label">Ingredienti inclusi · tocca per toglierli</span><div class="chips">${inclusi}</div></div>` : ''}
+      ${base.length ? `<div class="grp"><span class="label">Ingredienti inclusi · tocca per toglierli${P.sconto_tolti ? ', il prezzo scende' : ''}</span><div class="chips">${inclusi}</div></div>` : ''}
       <div class="grp"><span class="label">${pz ? 'Aggiungi' : 'Scegli gli ingredienti'}</span>${gruppi}</div>
     </div>
     <div class="sheet-f">
@@ -423,6 +450,11 @@ document.addEventListener('input', e => {
   if (!t.dataset.c) return;
   if (t.dataset.c === 'tel') { cliente.tel = t.value; cercaScheda(); return; }
   cliente[t.dataset.c] = t.value;
+  if (t.dataset.c === 'giorno') {
+    const gg = giorniRitiro(), primo = gg[0] && gg[0].k === t.value;
+    cliente.quando = primo ? '' : String(Math.ceil((gg.find(x => x.k === t.value) || gg[0]).da / (15 * MIN)) * 15 * MIN);
+    $('#c-quando').innerHTML = opzioniOra(); stimaRes = null; $('#stima').innerHTML = vStima(); aggiornaStima(); return;
+  }
   if (t.dataset.c === 'quando') { stimaRes = null; $('#stima').innerHTML = vStima(); aggiornaStima(); }
 });
 document.addEventListener('change', e => {
