@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Area pizzeria</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand"><span class="label">Area pizzeria</span><b id="brand">Prenota la Pizza</b></div>
+    <nav class="tabs" id="tabs"></nav>
+  </div>
+</header>
+<main class="wrap" id="main"></main>
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="common.js"></script>
+<script>
+let utente = null, P = null, view = 'coda', ordini = [], ritiratiOggi = 0, conferma = null, canale = null;
+let D = { formati: [], impasti: [], ingredienti: [], pizze: [], pi: [] };
+let authMode = 'login', authMsg = '', authBusy = false;
+
+/* ---------- accesso ---------- */
+async function avvio() {
+  const { data } = await sb.auth.getSession();
+  utente = data.session?.user || null;
+  if (!utente) return render();
+  const { data: ruoli, error } = await sb.from('staff').select('ruolo, pizzerie(*)').eq('user_id', utente.id);
+  if (error) { toast(msgErr(error), true); return render(); }
+  const r = ruoli.find(x => x.pizzerie.slug === SLUG) || ruoli[0];
+  P = r ? r.pizzerie : null;
+  if (P) { await Promise.all([caricaOrdini(), caricaImpostazioni()]); ascolta(); }
+  render();
+}
+sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') { utente = null; P = null; render(); } });
+
+function vLogin() {
+  const reg = authMode === 'signup';
+  return `<div class="auth panel">
+    <h1 class="page-h" style="font-size:28px">${reg ? 'Crea il tuo account' : 'Accedi'}</h1>
+    <p class="muted" style="margin:0">${reg ? 'Dopo la registrazione l\'account va abilitato per la tua pizzeria.' : 'Entra per vedere la coda del forno e cambiare listino e prezzi.'}</p>
+    <form id="auth-form" class="auth-form">
+      <div class="field"><label class="label" for="a-email">Email</label><input id="a-email" type="email" required autocomplete="email"></div>
+      <div class="field"><label class="label" for="a-pass">Password</label><input id="a-pass" type="password" required minlength="8" autocomplete="${reg ? 'new-password' : 'current-password'}"></div>
+      ${authMsg ? `<span class="${authMsg.startsWith('✓') ? 'ok-msg' : 'err-msg'}">${esc(authMsg)}</span>` : ''}
+      <button class="primary" type="submit" ${authBusy ? 'disabled' : ''}>${authBusy ? 'Attendi…' : reg ? 'Crea account' : 'Accedi'}</button>
+    </form>
+    <button class="linkbtn" data-act="authmode">${reg ? 'Hai già un account? Accedi' : 'Prima volta? Crea un account'}</button>
+  </div>`;
+}
+async function inviaAuth(e) {
+  e.preventDefault();
+  const email = $('#a-email').value.trim(), password = $('#a-pass').value;
+  authBusy = true; authMsg = ''; render(); $('#a-email').value = email;
+  let res;
+  if (authMode === 'signup') {
+    res = await sb.auth.signUp({ email, password, options: { emailRedirectTo: location.href.split('?')[0].split('#')[0] + location.search } });
+    if (!res.error && !res.data.session) { authBusy = false; authMode = 'login'; authMsg = '✓ Account creato. Se ti arriva una email di conferma, aprila; poi accedi qui.'; return render(); }
+  } else res = await sb.auth.signInWithPassword({ email, password });
+  authBusy = false;
+  if (res.error) {
+    const m = res.error.message || '';
+    authMsg = /Invalid login/i.test(m) ? 'Email o password non corrette.' : /not confirmed/i.test(m) ? 'Devi prima confermare l\'email dal messaggio che ti abbiamo inviato.' : /already registered/i.test(m) ? 'Esiste già un account con questa email: accedi.' : m;
+    render(); $('#a-email').value = email; return;
+  }
+  authMsg = ''; avvio();
+}
+
+/* ---------- coda ---------- */
+async function caricaOrdini() {
+  const inizioGiorno = new Date(); inizioGiorno.setHours(0, 0, 0, 0);
+  const [a, b] = await Promise.all([
+    sb.from('ordini').select('*, righe_ordine(*), slot_forno(*)').eq('pizzeria_id', P.id).in('stato', ['ricevuto', 'preparazione', 'pronto']).order('ritiro'),
+    sb.from('ordini').select('id', { count: 'exact', head: true }).eq('pizzeria_id', P.id).eq('stato', 'ritirato').gte('creato_il', inizioGiorno.toISOString())]);
+  if (a.error) { toast(msgErr(a.error), true); return; }
+  ordini = a.data; ritiratiOggi = b.count || 0;
+}
+// Tempo reale: appena arriva o cambia un ordine, la coda si aggiorna da sola
+function ascolta() {
+  if (canale) sb.removeChannel(canale);
+  let t;
+  canale = sb.channel('ordini-' + P.id)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'ordini', filter: 'pizzeria_id=eq.' + P.id }, (ev) => {
+      clearTimeout(t); t = setTimeout(async () => {
+        const nuovo = ev.eventType === 'INSERT';
+        await caricaOrdini(); if (view === 'coda') render();
+        if (nuovo) { toast(`Nuovo ordine #${ev.new.numero} da ${ev.new.nome_cliente}`); suona(); }
+      }, 300);
+    }).subscribe();
+}
+let audio;
+function suona() { try { audio = audio || new AudioContext(); const o = audio.createOscillator(), g = audio.createGain(); o.frequency.value = 880; g.gain.value = .15; o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + .25); } catch (e) { } }
+
+function vCoda() {
+  const now = Date.now(), cap = +P.capacita_forno;
+  const slots = ordini.flatMap(o => o.slot_forno.map(s => ({ start: +new Date(s.inizio), end: +new Date(s.fine), posti: s.posti })));
+  const usati = x => slots.reduce((a, s) => a + (s.start <= x && x < s.end ? s.posti : 0), 0);
+  const adesso = Math.min(cap, usati(now)), nCell = Math.min(cap, 12);
+  const bars = Array.from({ length: 12 }, (_, k) => { const x = now + k * 5 * MIN, u = Math.min(cap, usati(x)); return `<div class="${u >= cap ? 'full' : ''}" style="height:${Math.max(3, u / cap * 100)}%" title="${ora(x)}: ${u}/${cap} posti"></div>`; }).join('');
+  const lab = Array.from({ length: 12 }, (_, k) => `<span>${k % 3 === 0 ? ora(now + k * 5 * MIN) : ''}</span>`).join('');
+  const nomi = { ricevuto: 'Ricevuto', preparazione: 'In preparazione', pronto: 'Pronto' };
+  const next = { ricevuto: ['preparazione', 'Inizia'], preparazione: ['pronto', 'Segna pronto'], pronto: ['ritirato', 'Ritirato'] };
+  const tk = ordini.map(o => {
+    const mins = Math.round((new Date(o.ritiro) - now) / MIN);
+    return `<article class="ticket ${o.stato}">
+      <div class="top"><span class="n">#${o.numero}</span><span class="pill ${o.stato}">${nomi[o.stato]}</span></div>
+      <div class="top"><span><b>${esc(o.nome_cliente)}</b> <span class="muted" style="font-size:12px">${o.canale === 'totem' ? 'totem' : 'online'}</span>${o.telefono ? `<br><span class="muted mono" style="font-size:12px">${esc(o.telefono)}</span>` : ''}</span>
+        <span class="rit">${ora(o.ritiro)}<br><span class="muted" style="font-size:12px;font-family:var(--f-body)">${mins > 0 ? 'tra ' + mins + ' min' : mins === 0 ? 'adesso' : 'da ' + (-mins) + ' min'}</span></span></div>
+      <ul>${o.righe_ordine.map(r => {
+        const det = [r.formato_nome, r.impasto_nome && r.impasto_nome !== 'Classico' ? r.impasto_nome : '',
+          r.aggiunte.length ? '+ ' + r.aggiunte.map(x => x.nome).join(', ') : '', r.tolti.length ? 'senza ' + r.tolti.map(x => x.nome).join(', ') : ''].filter(Boolean).join(' · ');
+        return `<li>${r.quantita}× ${esc(r.nome)}<small>${esc(det)}</small></li>`; }).join('')}</ul>
+      <div class="top"><span class="muted">Totale</span><span class="mono">${eur(o.totale)}</span></div>
+      <div class="acts"><button class="primary" data-act="stato" data-id="${o.id}" data-s="${next[o.stato][0]}">${next[o.stato][1]}</button>
+        <button class="ghost danger" data-act="annulla" data-id="${o.id}">${conferma === o.id ? 'Tocca di nuovo per annullare' : 'Annulla'}</button></div>
+    </article>`;
+  }).join('');
+  return `<div class="coda-bar"><h1 class="page-h">Coda forno</h1>
+      <button class="ghost" data-act="ritardo">Siamo in ritardo: +5 min</button></div>
+    <div class="coda-top">
+      <div class="panel"><span class="label">Forno adesso</span><div class="mono" style="font-size:26px">${adesso}/${cap} <span class="muted" style="font-size:14px;font-family:var(--f-body)">posti</span></div>
+        <div class="oven" style="--cap:${nCell}">${Array.from({ length: nCell }, (_, i) => `<i class="${i < adesso ? 'on' : ''}"></i>`).join('')}</div></div>
+      <div class="panel"><span class="label">Occupazione prossimi 60 minuti</span><div class="tl">${bars}</div><div class="tl-x">${lab}</div></div>
+    </div>
+    <span class="label">${ordini.length} ${ordini.length === 1 ? "ordine" : "ordini"} da preparare${ritiratiOggi ? ` · ${ritiratiOggi} ritirati oggi` : ''}</span>
+    ${ordini.length ? `<div class="tickets">${tk}</div>` : `<div class="empty" style="margin-top:14px">Nessun ordine in coda. I nuovi ordini da app e totem compaiono qui da soli.</div>`}`;
+}
+
+/* ---------- impostazioni ---------- */
+async function caricaImpostazioni() {
+  const q = t => sb.from(t).select('*').eq('pizzeria_id', P.id).order('ordine').order('nome');
+  const [f, i, g, z] = await Promise.all([q('formati'), q('impasti'), q('ingredienti'), q('pizze')]);
+  const err = [f, i, g, z].find(x => x.error); if (err) { toast(msgErr(err.error), true); return; }
+  const ids = z.data.map(p => p.id);
+  const pi = ids.length ? await sb.from('pizza_ingredienti').select('*').in('pizza_id', ids) : { data: [] };
+  D = { formati: f.data, impasti: i.data, ingredienti: g.data, pizze: z.data, pi: pi.data || [] };
+}
+const ingrDi = id => D.pi.filter(x => x.pizza_id === id).map(x => x.ingrediente_id);
+const nomeIngr = id => D.ingredienti.find(g => g.id === id)?.nome || '';
+
+function vImp() {
+  const gen = (f, label, type = 'text', extra = '') => `<div class="field"><label class="label" for="p-${f}">${label}</label><input id="p-${f}" type="${type}" data-t="pizzerie" data-id="${P.id}" data-f="${f}" value="${esc(type === 'time' ? String(P[f]).slice(0, 5) : P[f])}" ${type === 'number' ? 'step="any" inputmode="decimal"' : ''} ${extra}></div>`;
+  const cell = (t, row, f, type = 'text', extra = '') => type === 'checkbox'
+    ? `<td class="c"><input type="checkbox" id="${t}-${row.id}-${f}" data-t="${t}" data-id="${row.id}" data-f="${f}" ${row[f] ? 'checked' : ''} aria-label="${f}"></td>`
+    : `<td><input type="${type}" id="${t}-${row.id}-${f}" data-t="${t}" data-id="${row.id}" data-f="${f}" value="${esc(row[f])}" ${type === 'number' ? 'step="any" inputmode="decimal"' : ''} ${extra} aria-label="${f}"></td>`;
+  const del = (t, row) => `<td class="c"><button class="del ${conferma === row.id ? 'sure' : ''}" data-act="del" data-t="${t}" data-id="${row.id}" aria-label="Elimina">${conferma === row.id ? 'Elimina?' : '×'}</button></td>`;
+  const cap = +P.capacita_forno;
+  const formati = D.formati.map(f => `<tr>${cell('formati', f, 'nome')}${cell('formati', f, 'minuti', 'number', 'min="1"')}${cell('formati', f, 'posti', 'number', 'min="1"')}${cell('formati', f, 'supplemento', 'number')}${cell('formati', f, 'moltiplicatore_aggiunte', 'number')}${cell('formati', f, 'attivo', 'checkbox')}${del('formati', f)}</tr>
+    ${+f.posti > cap ? `<tr><td colspan="7" class="warn-line">Questo formato occupa più posti di quanti ne abbia il forno.</td></tr>` : ''}`).join('');
+  const impasti = D.impasti.map(m => `<tr>${cell('impasti', m, 'nome')}${cell('impasti', m, 'sovrapprezzo', 'number')}${cell('impasti', m, 'disponibile', 'checkbox')}${del('impasti', m)}</tr>`).join('');
+  const cats = [...new Set([...CATS, ...D.ingredienti.map(g => g.categoria)])];
+  const ingr = D.ingredienti.map(g => `<tr>${cell('ingredienti', g, 'nome')}<td><select id="ingredienti-${g.id}-categoria" data-t="ingredienti" data-id="${g.id}" data-f="categoria" aria-label="categoria">${cats.map(c => `<option ${c === g.categoria ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></td>${cell('ingredienti', g, 'prezzo', 'number')}${cell('ingredienti', g, 'disponibile', 'checkbox')}${del('ingredienti', g)}</tr>`).join('');
+  const pizze = D.pizze.map(p => { const ii = ingrDi(p.id); return `<tr>${cell('pizze', p, 'nome')}${cell('pizze', p, 'prezzo', 'number')}
+    <td style="min-width:240px"><span class="pi-list" style="font-size:13px">${ii.map(id => esc(nomeIngr(id))).join(', ') || '<span class="muted">Solo base</span>'}</span>
+      <details><summary>Modifica ingredienti</summary><div class="chips">${D.ingredienti.map(g => `<button class="chip" data-act="pizIngr" data-p="${p.id}" data-g="${g.id}" aria-pressed="${ii.includes(g.id)}">${esc(g.nome)}</button>`).join('')}</div></details></td>
+    ${cell('pizze', p, 'attiva', 'checkbox')}${del('pizze', p)}</tr>`; }).join('');
+  const base = location.href.replace(/gestione\.html.*$/, '');
+  const linkCliente = `${base}?p=${encodeURIComponent(P.slug)}`, linkTotem = `${linkCliente}&totem=1`;
+  return `<h1 class="page-h">Impostazioni</h1>
+    <p class="muted" style="margin:0;max-width:65ch">Ogni modifica si salva appena lasci il campo e vale subito per i nuovi ordini. Gli ordini già in coda mantengono il loro orario.</p>
+    <section class="set-sec"><h2 class="sec-h" style="margin-top:0">Link da condividere</h2>
+      <div class="links"><div class="field"><span class="label">Ordini online</span><code class="sel">${esc(linkCliente)}</code></div>
+      <div class="field"><span class="label">Totem nel locale</span><code class="sel">${esc(linkTotem)}</code></div></div></section>
+    <section class="set-sec"><h2 class="sec-h">Pizzeria e forno</h2>
+      <div class="grid-gen">${gen('nome', 'Nome pizzeria')}${gen('apertura', 'Apertura', 'time')}${gen('chiusura', 'Chiusura', 'time')}
+      ${gen('capacita_forno', 'Posti nel forno', 'number', 'min="1"')}${gen('margine_minuti', 'Margine di sicurezza (min)', 'number', 'min="0"')}
+      ${gen('prezzo_base_pers', 'Prezzo base pizza personalizzata (€)', 'number')}${gen('descrizione_base', 'Base sempre inclusa')}</div></section>
+    <section class="set-sec"><h2 class="sec-h">Formati</h2>
+      <p class="muted">Il tempo è quello medio dalla stesura all'uscita dal forno. I posti dicono quanto spazio occupa nel forno: con 6 posti entrano 6 normali oppure 3 famiglia. Il moltiplicatore si applica al prezzo degli ingredienti aggiunti.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Minuti</th><th>Posti</th><th>Supplemento €</th><th>× aggiunte</th><th>Attivo</th><th></th></tr></thead><tbody>${formati}</tbody></table></div>
+      <button class="ghost add" data-act="add" data-t="formati">+ Aggiungi formato</button></section>
+    <section class="set-sec"><h2 class="sec-h">Impasti</h2>
+      <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Sovrapprezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${impasti}</tbody></table></div>
+      <button class="ghost add" data-act="add" data-t="impasti">+ Aggiungi impasto</button></section>
+    <section class="set-sec"><h2 class="sec-h">Ingredienti</h2>
+      <p class="muted">Il prezzo è quello dell'aggiunta su una pizza normale. Togli la spunta quando un ingrediente finisce: sparisce dalle scelte e le pizze che lo usano risultano non disponibili.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Categoria</th><th>Prezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${ingr}</tbody></table></div>
+      <button class="ghost add" data-act="add" data-t="ingredienti">+ Aggiungi ingrediente</button></section>
+    <section class="set-sec"><h2 class="sec-h">Listino</h2>
+      <p class="muted">Prezzo della pizza in formato normale. Per gli altri formati si aggiunge il supplemento del formato.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Pizza</th><th>Prezzo €</th><th>Ingredienti oltre la base</th><th>In listino</th><th></th></tr></thead><tbody>${pizze}</tbody></table></div>
+      <button class="ghost add" data-act="add" data-t="pizze">+ Aggiungi pizza</button></section>`;
+}
+
+/* ---------- vista ---------- */
+function render() {
+  const t = (id, l) => `<button class="tab" data-act="view" data-v="${id}" aria-current="${view === id}">${l}</button>`;
+  $('#brand').textContent = P ? P.nome : 'Prenota la Pizza';
+  $('#tabs').innerHTML = utente ? (P ? t('coda', 'Coda forno') + t('imp', 'Impostazioni') + `<a class="tab" href="./?p=${encodeURIComponent(P.slug)}" target="_blank" rel="noopener">Pagina ordini</a>` : '')
+    + `<button class="tab totem-btn" data-act="esci">Esci</button>` : '';
+  if (!utente) { $('#main').innerHTML = vLogin(); $('#auth-form').addEventListener('submit', inviaAuth); return; }
+  if (!P) { $('#main').innerHTML = `<div class="auth panel"><h1 class="page-h" style="font-size:26px">Account non ancora abilitato</h1>
+    <p>Hai effettuato l'accesso come <b>${esc(utente.email)}</b>, ma questo account non è ancora collegato a nessuna pizzeria.</p>
+    <p class="muted">Chiedi di abilitarlo, poi ricarica la pagina.</p><button class="ghost" data-act="ricarica">Ricarica</button></div>`; return; }
+  const y = scrollY;
+  $('#main').innerHTML = view === 'imp' ? vImp() : vCoda();
+  if (view === 'imp') scrollTo(0, y);
+}
+
+async function salva(t, id, patch) {
+  const { error } = await sb.from(t).update(patch).eq('id', id);
+  if (error) { toast('Non salvato: ' + msgErr(error), true); return false; }
+  toast('Salvato'); return true;
+}
+const NUOVI = {
+  formati: () => ({ nome: 'Nuovo formato', minuti: 8, posti: 1, supplemento: 0, moltiplicatore_aggiunte: 1, ordine: D.formati.length + 1 }),
+  impasti: () => ({ nome: 'Nuovo impasto', sovrapprezzo: 0, ordine: D.impasti.length + 1 }),
+  ingredienti: () => ({ nome: 'Nuovo ingrediente', categoria: 'Extra', prezzo: 1, ordine: D.ingredienti.length + 1 }),
+  pizze: () => ({ nome: 'Nuova pizza', prezzo: 7, ordine: D.pizze.length + 1 }),
+};
+const ACT = {
+  view: d => { view = d.v; conferma = null; render(); scrollTo(0, 0); },
+  authmode: () => { authMode = authMode === 'login' ? 'signup' : 'login'; authMsg = ''; render(); },
+  esci: async () => { if (canale) sb.removeChannel(canale); await sb.auth.signOut(); utente = null; P = null; render(); },
+  ricarica: () => location.reload(),
+  stato: async d => {
+    const { error } = await sb.from('ordini').update({ stato: d.s }).eq('id', d.id);
+    if (error) return toast(msgErr(error), true);
+    await caricaOrdini(); render();
+  },
+  annulla: async d => {
+    if (conferma !== d.id) { conferma = d.id; return render(); }
+    conferma = null;
+    const { error } = await sb.from('ordini').update({ stato: 'annullato' }).eq('id', d.id);
+    if (error) return toast(msgErr(error), true);
+    await caricaOrdini(); render(); toast('Ordine annullato: i posti nel forno sono di nuovo liberi');
+  },
+  ritardo: async () => {
+    const { data, error } = await sb.rpc('segnala_ritardo', { p_pizzeria: P.id, p_minuti: 5 });
+    if (error) return toast(msgErr(error), true);
+    await caricaOrdini(); render(); toast(data ? `${data} ordini spostati di 5 minuti` : 'Nessun ordine da spostare');
+  },
+  add: async d => {
+    const { data, error } = await sb.from(d.t).insert({ pizzeria_id: P.id, ...NUOVI[d.t]() }).select().single();
+    if (error) return toast(msgErr(error), true);
+    D[d.t].push(data); render();
+    const el = document.getElementById(`${d.t}-${data.id}-nome`); el?.focus(); el?.select();
+  },
+  del: async d => {
+    if (conferma !== d.id) { conferma = d.id; return render(); }
+    conferma = null;
+    if (d.t === 'formati' && D.formati.length < 2) return toast('Serve almeno un formato', true);
+    const { error } = await sb.from(d.t).delete().eq('id', d.id);
+    if (error) return toast(msgErr(error), true);
+    D[d.t] = D[d.t].filter(x => x.id !== d.id);
+    if (d.t === 'ingredienti') D.pi = D.pi.filter(x => x.ingrediente_id !== d.id);
+    render(); toast('Eliminato');
+  },
+  pizIngr: async (d, el) => {
+    const has = D.pi.some(x => x.pizza_id === d.p && x.ingrediente_id === d.g);
+    const { error } = has ? await sb.from('pizza_ingredienti').delete().eq('pizza_id', d.p).eq('ingrediente_id', d.g)
+      : await sb.from('pizza_ingredienti').insert({ pizza_id: d.p, ingrediente_id: d.g });
+    if (error) return toast(msgErr(error), true);
+    D.pi = has ? D.pi.filter(x => !(x.pizza_id === d.p && x.ingrediente_id === d.g)) : [...D.pi, { pizza_id: d.p, ingrediente_id: d.g }];
+    el.setAttribute('aria-pressed', !has);
+    el.closest('td').querySelector('.pi-list').innerHTML = ingrDi(d.p).map(id => esc(nomeIngr(id))).join(', ') || '<span class="muted">Solo base</span>';
+  },
+};
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]'); if (!el) return;
+  if (conferma && !['annulla', 'del'].includes(el.dataset.act)) { conferma = null; }
+  ACT[el.dataset.act]?.(el.dataset, el, e);
+});
+document.addEventListener('change', async e => {
+  const t = e.target; if (!t.dataset.t) return;
+  let val = t.type === 'checkbox' ? t.checked : t.type === 'number' ? parseFloat(String(t.value).replace(',', '.')) : t.value;
+  if (t.type === 'number' && !isFinite(val)) { toast('Scrivi un numero', true); return; }
+  if (t.type !== 'checkbox' && t.type !== 'number' && !String(val).trim()) { toast('Il campo non può restare vuoto', true); return; }
+  if (['minuti', 'posti', 'capacita_forno', 'margine_minuti'].includes(t.dataset.f)) val = Math.round(val);
+  const ok = await salva(t.dataset.t, t.dataset.id, { [t.dataset.f]: val });
+  if (!ok) return;
+  if (t.dataset.t === 'pizzerie') { P[t.dataset.f] = val; $('#brand').textContent = P.nome; if (t.dataset.f === 'capacita_forno') render(); }
+  else { const row = D[t.dataset.t].find(x => x.id === t.dataset.id); if (row) row[t.dataset.f] = val; if (t.dataset.f === 'posti') render(); }
+});
+// aggiorna i minuti mancanti ogni 30 secondi
+setInterval(() => { if (P && view === 'coda' && !conferma) render(); }, 30000);
+avvio();
+</script>
+</body>
+</html>

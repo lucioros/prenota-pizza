@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prenota la Pizza</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand"><span class="label">Ordina da asporto</span><b id="brand">…</b></div>
+    <nav class="tabs" id="tabs"></nav>
+  </div>
+</header>
+<main class="wrap" id="main"><div class="empty" style="margin-top:24px">Carico il listino…</div></main>
+<div id="modal"></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="common.js"></script>
+<script>
+const TOTEM = params.get('totem') === '1';
+let P = null, formati = [], impasti = [], ingr = [], pizze = [];
+let cart = [], B = null, done = null, cliente = { nome: '', tel: '', quando: '' }, errore = '', inviando = false;
+let stimaRes = null, stimaSeq = 0, ultimo = TOTEM ? null : lsGet('pz_ultimo_' + SLUG), statoUltimo = null;
+
+const F = id => formati.find(f => f.id === id) || formati[0];
+const IM = id => impasti.find(i => i.id === id);
+const G = id => ingr.find(g => g.id === id);
+const PZ = id => pizze.find(p => p.id === id);
+
+// Prezzo mostrato al cliente: lo stesso calcolo lo rifà il database quando conferma
+function prezzo(r) {
+  const f = F(r.formato);
+  let p = r.tipo === 'pers' ? +P.prezzo_base_pers : (+PZ(r.pizza)?.prezzo || 0);
+  p += +f.supplemento || 0;
+  const im = IM(r.impasto); if (im) p += +im.sovrapprezzo || 0;
+  p += r.aggiunte.reduce((a, id) => a + (+G(id)?.prezzo || 0) * (+f.moltiplicatore_aggiunte), 0);
+  return r2(Math.max(0, p));
+}
+const nomeRiga = r => r.tipo === 'pers' ? 'Pizza personalizzata' : (PZ(r.pizza)?.nome || 'Pizza');
+const totale = rows => r2(rows.reduce((a, r) => a + prezzo(r) * r.qta, 0));
+const perRpc = rows => rows.map(r => ({ tipo: r.tipo, pizza_id: r.pizza, formato_id: r.formato, impasto_id: r.impasto, qta: r.qta, aggiunte: r.aggiunte, tolti: r.tolti }));
+
+async function carica() {
+  const { data: p, error } = await sb.from('pizzerie').select('*').eq('slug', SLUG).maybeSingle();
+  if (error || !p) { $('#main').innerHTML = `<div class="empty" style="margin-top:24px">${error ? esc(msgErr(error)) : 'Pizzeria non trovata. Controlla il link.'}</div>`; return; }
+  P = p;
+  const [f, i, g, z] = await Promise.all([
+    sb.from('formati').select('*').eq('pizzeria_id', P.id).eq('attivo', true).order('ordine'),
+    sb.from('impasti').select('*').eq('pizzeria_id', P.id).order('ordine'),
+    sb.from('ingredienti').select('*').eq('pizzeria_id', P.id).order('ordine'),
+    sb.from('pizze').select('*, pizza_ingredienti(ingrediente_id)').eq('pizzeria_id', P.id).eq('attiva', true).order('ordine')]);
+  const err = [f, i, g, z].find(x => x.error);
+  if (err) { toast(msgErr(err.error), true); return; }
+  formati = f.data; impasti = i.data; ingr = g.data;
+  pizze = z.data.map(p => ({ ...p, ingr: p.pizza_ingredienti.map(x => x.ingrediente_id) }));
+  // tieni nel carrello solo ciò che esiste ancora
+  cart = cart.filter(r => formati.some(f => f.id === r.formato) && (r.tipo === 'pers' || PZ(r.pizza)));
+  render(); aggiornaStima(); controllaUltimo();
+}
+
+function render() {
+  if (!P) return;
+  document.body.classList.toggle('totem', TOTEM);
+  document.title = P.nome;
+  $('#brand').textContent = P.nome;
+  $('#tabs').innerHTML = TOTEM ? '' : `<a class="tab" href="gestione.html?p=${encodeURIComponent(SLUG)}">Area pizzeria</a>`;
+  $('#main').innerHTML = vOrdina();
+  renderModal();
+}
+
+function vOrdina() {
+  const fam = formati.find(f => f.posti > 1);
+  const lista = pizze.map(p => {
+    const manca = p.ingr.some(id => !G(id)?.disponibile);
+    return `<button class="pz" data-act="apri" data-tipo="listino" data-p="${p.id}" ${manca ? 'disabled' : ''}>
+      <h3>${esc(p.nome)}</h3>
+      <span class="ing">${esc(P.descrizione_base)}${p.ingr.length ? ', ' : ''}${p.ingr.map(id => esc(G(id)?.nome || '')).join(', ').toLowerCase()}</span>
+      <span class="row">${manca ? '<span class="badge">Non disponibile oggi</span>' : `<span class="price">${eur(p.prezzo)}</span>`}
+      ${!manca && fam ? `<span class="muted mono" style="font-size:12px">${esc(fam.nome)} ${eur(+p.prezzo + +fam.supplemento)}</span>` : ''}</span>
+    </button>`;
+  }).join('');
+  const sv = servizio(P);
+  return `<div class="order-grid">
+    <section style="min-width:0">
+      <h1 class="page-h">${sv.aperto ? 'Cosa vi prepariamo?' : 'Ordina ora, ritira quando apriamo'}</h1>
+      <p class="muted" style="margin:0">${sv.aperto ? 'Scegli dal listino o componi la tua pizza. Ti diciamo subito a che ora passare a ritirarla.' : `Apriamo alle ${ora(sv.start)}${giorno(sv.start) ? ' di ' + esc(giorno(sv.start)) : ''}. Puoi già ordinare.`}</p>
+      <button class="create" data-act="apri" data-tipo="pers">
+        <span class="plus">+</span>
+        <span><h3>Crea la tua pizza</h3><span class="muted">${esc(P.descrizione_base)}, poi scegli impasto e ingredienti · da <span class="mono">${eur(P.prezzo_base_pers)}</span></span></span>
+      </button>
+      <h2 class="sec-h">Il listino</h2>
+      <div class="cards">${lista || '<div class="empty">Il listino è vuoto.</div>'}</div>
+    </section>
+    <aside class="cart"><div id="track">${vUltimo()}</div>${vCarrello()}</aside>
+  </div>`;
+}
+
+function vUltimo() {
+  if (!ultimo || !statoUltimo) return '';
+  const nomi = { ricevuto: 'Ricevuto', preparazione: 'In preparazione', pronto: 'Pronto, puoi passare!', ritirato: 'Ritirato', annullato: 'Annullato' };
+  return `<div class="track ${statoUltimo.stato}"><span class="label">Il tuo ordine #${statoUltimo.numero}</span>
+    <b>${nomi[statoUltimo.stato] || ''}</b><span class="muted">Ritiro alle <span class="mono">${ora(statoUltimo.ritiro)}</span> · ${eur(statoUltimo.totale)}</span></div>`;
+}
+
+function opzioniOra() {
+  const sv = servizio(P);
+  let t = Math.ceil((sv.start + 30 * MIN) / (15 * MIN)) * 15 * MIN, out = '';
+  while (t <= sv.close) { out += `<option value="${t}" ${String(t) === cliente.quando ? 'selected' : ''}>${ora(t)}${giorno(t) ? ' · ' + giorno(t) : ''}</option>`; t += 15 * MIN; }
+  return out;
+}
+function vCarrello() {
+  const righe = cart.map((r, i) => {
+    const f = F(r.formato), im = IM(r.impasto);
+    const det = [f.nome, im && +im.sovrapprezzo ? 'impasto ' + im.nome.toLowerCase() : '',
+      r.aggiunte.length ? '+ ' + r.aggiunte.map(id => G(id)?.nome).join(', ').toLowerCase() : '',
+      r.tolti.length ? 'senza ' + r.tolti.map(id => G(id)?.nome).join(', ').toLowerCase() : ''].filter(Boolean).join(' · ');
+    return `<li class="line"><span class="t">${r.qta}× ${esc(nomeRiga(r))}</span><span class="p">${eur(prezzo(r) * r.qta)}</span>
+      <span class="d">${esc(det)}</span><button class="x" data-act="togli" data-i="${i}">Togli</button></li>`;
+  }).join('');
+  return `<h2>Il tuo ordine</h2>
+    ${cart.length ? `<ul class="lines">${righe}</ul><div class="tot"><span>Totale</span><span class="mono">${eur(totale(cart))}</span></div>`
+      : `<p class="muted" style="margin:0">Ancora vuoto. Tocca una pizza per aggiungerla.</p>`}
+    <div class="field"><label class="label" for="c-nome">Nome per il ritiro</label><input id="c-nome" data-c="nome" value="${esc(cliente.nome)}" autocomplete="given-name" maxlength="60"></div>
+    ${TOTEM ? '' : `<div class="field"><label class="label" for="c-tel">Telefono (facoltativo)</label><input id="c-tel" data-c="tel" type="tel" value="${esc(cliente.tel)}" autocomplete="tel" maxlength="30"></div>`}
+    <div class="field"><label class="label" for="c-quando">Quando passi?</label>
+      <select id="c-quando" data-c="quando"><option value="">Appena pronta</option>${opzioniOra()}</select></div>
+    <div id="stima">${vStima()}</div>
+    ${errore ? `<span class="err-msg">${esc(errore)}</span>` : ''}
+    <button class="primary" data-act="conferma" ${cart.length && !inviando ? '' : 'disabled'}>${inviando ? 'Invio in corso…' : 'Conferma ordine'}</button>`;
+}
+function vStima() {
+  if (!cart.length) return `<div class="stima"><span class="label">Orario di ritiro</span><span class="muted">Compare qui appena aggiungi una pizza.</span></div>`;
+  const e = stimaRes;
+  if (!e) return `<div class="stima"><span class="label">Ritiro previsto</span><span class="muted">Calcolo in corso…</span></div>`;
+  if (e.err) return `<div class="stima err">${esc(e.err)}</div>`;
+  return `<div class="stima ${e.oltre_chiusura ? 'err' : ''}"><span class="label">Ritiro previsto</span>
+    <span class="ora">${ora(e.ritiro)}</span>
+    <span class="muted" style="font-size:13px">${giorno(e.ritiro) ? esc(giorno(e.ritiro)) + ' · ' : ''}${e.pizze_davanti ? `${e.pizze_davanti} pizze in coda prima delle tue` : 'Il forno è libero'}</span>
+    ${e.oltre_chiusura ? '<span style="font-size:13px">Oltre l\'orario di chiusura: prova con meno pizze.</span>' : ''}</div>`;
+}
+// L'orario lo calcola il database guardando tutti gli ordini già in coda
+let stimaTimer;
+function aggiornaStima() {
+  clearTimeout(stimaTimer);
+  if (!cart.length) { stimaRes = null; const el = $('#stima'); if (el) el.innerHTML = vStima(); return; }
+  stimaTimer = setTimeout(async () => {
+    const seq = ++stimaSeq;
+    const { data, error } = await sb.rpc('stima_ritiro', { p_pizzeria: P.id, p_righe: perRpc(cart), p_preferito: cliente.quando ? new Date(+cliente.quando).toISOString() : null });
+    if (seq !== stimaSeq) return;
+    stimaRes = error ? { err: msgErr(error) } : data;
+    const el = $('#stima'); if (el) el.innerHTML = vStima();
+  }, 250);
+}
+async function controllaUltimo() {
+  if (!ultimo) return;
+  const { data } = await sb.rpc('stato_ordine', { p_ordine: ultimo.id });
+  if (!data || ['ritirato', 'annullato'].includes(data.stato) && Date.now() - new Date(data.ritiro) > 30 * MIN || Date.now() - new Date(data.ritiro) > 6 * 3600000) {
+    ultimo = null; statoUltimo = null; lsSet('pz_ultimo_' + SLUG, null);
+  } else statoUltimo = data;
+  const tr = $('#track'); if (tr) tr.innerHTML = vUltimo();
+}
+
+function renderModal() {
+  const m = $('#modal');
+  if (done) {
+    m.innerHTML = `<div class="overlay"><div class="done" role="dialog" aria-label="Ordine confermato">
+      <span class="label">Ordine confermato</span><span class="num">${done.numero}</span>
+      <span class="muted">Grazie ${esc(done.nome)}, passa a ritirare alle</span>
+      <span class="ora">${ora(done.ritiro)}${giorno(done.ritiro) ? ' · ' + esc(giorno(done.ritiro)) : ''}</span>
+      <span class="muted">Totale da pagare al ritiro: <span class="mono">${eur(done.totale)}</span></span>
+      ${TOTEM ? '<span class="muted" style="font-size:13px">Ricorda il numero: ti chiamiamo con questo.</span>' : '<span class="muted" style="font-size:13px">Puoi seguire lo stato del tuo ordine da questa pagina.</span>'}
+      <button class="primary" data-act="nuovo" style="margin-top:8px">${TOTEM ? 'Fine' : 'Chiudi'}</button></div></div>`; return;
+  }
+  if (!B) { m.innerHTML = ''; return; }
+  const pz = B.tipo === 'listino' ? PZ(B.pizza) : null;
+  const fOpt = formati.map(f => `<button class="opt" data-act="b" data-k="formato" data-v="${f.id}" aria-pressed="${B.formato === f.id}">${esc(f.nome)}<small>${eur(prezzo({ ...B, formato: f.id }))} · ~${f.minuti} min</small></button>`).join('');
+  const iOpt = impasti.filter(i => i.disponibile).map(i => `<button class="opt" data-act="b" data-k="impasto" data-v="${i.id}" aria-pressed="${B.impasto === i.id}">${esc(i.nome)}<small>${+i.sovrapprezzo ? '+ ' + eur(i.sovrapprezzo) : 'incluso'}</small></button>`).join('');
+  const f = F(B.formato), base = pz ? pz.ingr : [];
+  const inclusi = base.map(id => `<button class="chip ${B.tolti.includes(id) ? 'off' : ''}" data-act="tolto" data-g="${id}">${esc(G(id)?.nome)}</button>`).join('');
+  const cats = [...new Set([...CATS, ...ingr.map(g => g.categoria)])];
+  const gruppi = cats.map(c => {
+    const gs = ingr.filter(g => g.categoria === c && !base.includes(g.id));
+    if (!gs.length) return '';
+    return `<div class="grp"><span class="label">${esc(c)}</span><div class="chips">${gs.map(g => `<button class="chip" data-act="agg" data-g="${g.id}" aria-pressed="${B.aggiunte.includes(g.id)}" ${g.disponibile ? '' : 'disabled'}>${esc(g.nome)}<small>${g.disponibile ? '+' + eur(g.prezzo * f.moltiplicatore_aggiunte) : 'finito'}</small></button>`).join('')}</div></div>`;
+  }).join('');
+  m.innerHTML = `<div class="overlay" data-act="fuori"><div class="sheet" role="dialog" aria-label="Componi la pizza">
+    <div class="sheet-h"><div><span class="label">${pz ? 'Dal listino' : 'Crea la tua pizza'}</span><h2>${esc(pz ? pz.nome : 'La tua pizza')}</h2>
+      <span class="muted">${esc(P.descrizione_base)}${pz && pz.ingr.length ? ', ' + pz.ingr.map(id => esc(G(id)?.nome)).join(', ').toLowerCase() : ''}</span></div>
+      <button class="close" data-act="chiudi" aria-label="Chiudi">×</button></div>
+    <div class="sheet-b">
+      <div class="grp"><span class="label">Formato</span><div class="seg">${fOpt}</div></div>
+      ${iOpt ? `<div class="grp"><span class="label">Impasto</span><div class="seg">${iOpt}</div></div>` : ''}
+      ${base.length ? `<div class="grp"><span class="label">Ingredienti inclusi · tocca per toglierli</span><div class="chips">${inclusi}</div></div>` : ''}
+      <div class="grp"><span class="label">${pz ? 'Aggiungi' : 'Scegli gli ingredienti'}</span>${gruppi}</div>
+    </div>
+    <div class="sheet-f">
+      <div class="step"><button data-act="qta" data-d="-1" aria-label="Meno">−</button><span>${B.qta}</span><button data-act="qta" data-d="1" aria-label="Più">+</button></div>
+      <span class="mono" style="font-size:18px">${eur(prezzo(B) * B.qta)}</span>
+      <button class="primary" data-act="aggiungi">Aggiungi all'ordine</button>
+    </div></div></div>`;
+}
+
+let totemTimer = null;
+const ACT = {
+  apri: d => { if (!formati.length) { toast('La pizzeria non ha ancora impostato i formati', true); return; }
+    const imp = impasti.find(i => i.disponibile);
+    B = { tipo: d.tipo, pizza: d.p || null, formato: formati[0].id, impasto: imp ? imp.id : null, aggiunte: [], tolti: [], qta: 1 }; renderModal(); },
+  chiudi: () => { B = null; renderModal(); },
+  fuori: (d, el, e) => { if (e.target === el) { B = null; renderModal(); } },
+  b: d => { B[d.k] = d.v; renderModal(); },
+  agg: d => { B.aggiunte = B.aggiunte.includes(d.g) ? B.aggiunte.filter(x => x !== d.g) : [...B.aggiunte, d.g]; renderModal(); },
+  tolto: d => { B.tolti = B.tolti.includes(d.g) ? B.tolti.filter(x => x !== d.g) : [...B.tolti, d.g]; renderModal(); },
+  qta: d => { B.qta = Math.max(1, Math.min(20, B.qta + +d.d)); renderModal(); },
+  aggiungi: () => { cart.push(B); B = null; errore = ''; stimaRes = null; render(); aggiornaStima(); toast('Aggiunta all\'ordine'); },
+  togli: d => { cart.splice(+d.i, 1); stimaRes = null; render(); aggiornaStima(); },
+  conferma: async () => {
+    if (!cliente.nome.trim()) { errore = 'Scrivi un nome, così ti chiamiamo al ritiro.'; render(); $('#c-nome')?.focus(); return; }
+    inviando = true; errore = ''; render();
+    const { data, error } = await sb.rpc('crea_ordine', { p_pizzeria: P.id, p_nome: cliente.nome.trim(), p_righe: perRpc(cart),
+      p_telefono: TOTEM ? null : cliente.tel.trim() || null, p_canale: TOTEM ? 'totem' : 'web',
+      p_preferito: cliente.quando ? new Date(+cliente.quando).toISOString() : null });
+    inviando = false;
+    if (error) { errore = msgErr(error); render(); aggiornaStima(); return; }
+    done = { ...data, nome: cliente.nome.trim() };
+    if (!TOTEM) { ultimo = { id: data.id }; lsSet('pz_ultimo_' + SLUG, ultimo); statoUltimo = { numero: data.numero, stato: 'ricevuto', ritiro: data.ritiro, totale: data.totale }; }
+    cart = []; cliente = { nome: TOTEM ? '' : cliente.nome, tel: TOTEM ? '' : cliente.tel, quando: '' }; stimaRes = null; render();
+    if (TOTEM) { clearTimeout(totemTimer); totemTimer = setTimeout(() => { done = null; render(); }, 20000); }
+  },
+  nuovo: () => { done = null; clearTimeout(totemTimer); render(); },
+};
+document.addEventListener('click', e => { const el = e.target.closest('[data-act]'); if (el) ACT[el.dataset.act]?.(el.dataset, el, e); });
+document.addEventListener('input', e => {
+  const t = e.target; if (!t.dataset.c) return;
+  cliente[t.dataset.c] = t.value;
+  if (t.dataset.c === 'quando') { stimaRes = null; $('#stima').innerHTML = vStima(); aggiornaStima(); }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && B) { B = null; renderModal(); } });
+// ogni 30 secondi aggiorna la stima (la coda cambia) e lo stato dell'ultimo ordine
+setInterval(() => { if (!P) return; aggiornaStima(); controllaUltimo(); }, 30000);
+// ogni 5 minuti ricarica il listino (ingredienti finiti, prezzi cambiati)
+setInterval(() => { const a = document.activeElement; if (!B && !done && !inviando && !(a && /INPUT|SELECT/.test(a.tagName))) carica(); }, 300000);
+carica();
+</script>
+</body>
+</html>
