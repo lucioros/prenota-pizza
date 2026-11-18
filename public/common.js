@@ -30,3 +30,11 @@ function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch
 const params = new URLSearchParams(location.search);
 const SLUG = params.get('p') || 'il-forno';
 const msgErr = e => (e && (e.message || e.error_description)) || 'Qualcosa non ha funzionato. Riprova.';
+// Errori delle Edge Functions: il messaggio vero è nel corpo della risposta
+async function invoca(nome, body) {
+  const { data, error } = await sb.functions.invoke(nome, { body });
+  if (!error) return { data };
+  let msg = msgErr(error);
+  try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch (e) { }
+  return { error: msg };
+}

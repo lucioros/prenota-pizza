@@ -25,8 +25,12 @@
 const TOTEM = params.get('totem') === '1';
 let P = null, formati = [], impasti = [], ingr = [], pizze = [];
 let cart = [], B = null, done = null, cliente = { nome: '', tel: '', quando: '' }, errore = '', inviando = false;
+let pagScelta = 'online', ritorno = null;
 let stimaRes = null, stimaSeq = 0, ultimo = TOTEM ? null : lsGet('pz_ultimo_' + SLUG), statoUltimo = null;
 
+// come paga il cliente: al totem sempre alla cassa, senza Stripe attivo solo al ritiro
+const modoPag = () => (TOTEM || !P.pagamenti_attivi) ? 'no' : P.pagamento_online;
+const pagaOnline = () => modoPag() === 'obbligatorio' || (modoPag() === 'facoltativo' && pagScelta === 'online');
 const F = id => formati.find(f => f.id === id) || formati[0];
 const IM = id => impasti.find(i => i.id === id);
 const G = id => ingr.find(g => g.id === id);
@@ -61,6 +65,7 @@ async function carica() {
   // tieni nel carrello solo ciò che esiste ancora
   cart = cart.filter(r => formati.some(f => f.id === r.formato) && (r.tipo === 'pers' || PZ(r.pizza)));
   render(); aggiornaStima(); controllaUltimo();
+  if (!carica.fatto) { carica.fatto = true; gestisciRitorno(); }
 }
 
 function render() {
@@ -102,9 +107,9 @@ function vOrdina() {
 
 function vUltimo() {
   if (!ultimo || !statoUltimo) return '';
-  const nomi = { ricevuto: 'Ricevuto', preparazione: 'In preparazione', pronto: 'Pronto, puoi passare!', ritirato: 'Ritirato', annullato: 'Annullato' };
+  const nomi = { attesa_pagamento: 'In attesa di pagamento', ricevuto: 'Ricevuto', preparazione: 'In preparazione', pronto: 'Pronto, puoi passare!', ritirato: 'Ritirato', annullato: 'Annullato' };
   return `<div class="track ${statoUltimo.stato}"><span class="label">Il tuo ordine #${statoUltimo.numero}</span>
-    <b>${nomi[statoUltimo.stato] || ''}</b><span class="muted">Ritiro alle <span class="mono">${ora(statoUltimo.ritiro)}</span> · ${eur(statoUltimo.totale)}</span></div>`;
+    <b>${nomi[statoUltimo.stato] || ''}</b><span class="muted">Ritiro alle <span class="mono">${ora(statoUltimo.ritiro)}</span> · ${eur(statoUltimo.totale)}${statoUltimo.pagato ? ' · pagato' : ''}</span></div>`;
 }
 
 function opzioniOra() {
@@ -129,9 +134,18 @@ function vCarrello() {
     ${TOTEM ? '' : `<div class="field"><label class="label" for="c-tel">Telefono (facoltativo)</label><input id="c-tel" data-c="tel" type="tel" value="${esc(cliente.tel)}" autocomplete="tel" maxlength="30"></div>`}
     <div class="field"><label class="label" for="c-quando">Quando passi?</label>
       <select id="c-quando" data-c="quando"><option value="">Appena pronta</option>${opzioniOra()}</select></div>
+    ${vPagamento()}
     <div id="stima">${vStima()}</div>
     ${errore ? `<span class="err-msg">${esc(errore)}</span>` : ''}
-    <button class="primary" data-act="conferma" ${cart.length && !inviando ? '' : 'disabled'}>${inviando ? 'Invio in corso…' : 'Conferma ordine'}</button>`;
+    <button class="primary" data-act="conferma" ${cart.length && !inviando ? '' : 'disabled'}>${inviando ? (pagaOnline() ? 'Ti porto al pagamento…' : 'Invio in corso…') : pagaOnline() ? 'Vai al pagamento' : 'Conferma ordine'}</button>`;
+}
+function vPagamento() {
+  const m = modoPag();
+  if (m === 'no') return '';
+  if (m === 'obbligatorio') return `<div class="field"><span class="label">Pagamento</span><span class="muted" style="font-size:14px">Paghi online al momento dell'ordine: carta, PayPal, Apple Pay o Google Pay.</span></div>`;
+  return `<div class="field"><span class="label">Come vuoi pagare?</span><div class="seg">
+    <button class="opt" data-act="paga" data-v="online" aria-pressed="${pagScelta === 'online'}">Paga ora<small>carta o PayPal</small></button>
+    <button class="opt" data-act="paga" data-v="al_ritiro" aria-pressed="${pagScelta === 'al_ritiro'}">Al ritiro<small>in pizzeria</small></button></div></div>`;
 }
 function vStima() {
   if (!cart.length) return `<div class="stima"><span class="label">Orario di ritiro</span><span class="muted">Compare qui appena aggiungi una pizza.</span></div>`;
@@ -167,12 +181,20 @@ async function controllaUltimo() {
 
 function renderModal() {
   const m = $('#modal');
+  if (ritorno) {
+    m.innerHTML = `<div class="overlay"><div class="done" role="dialog" aria-label="Pagamento">
+      ${ritorno.attesa ? `<span class="label">Pagamento</span><span class="ora">Sto verificando il pagamento…</span><span class="muted">Ci vuole qualche secondo.</span>`
+      : `<span class="label">Pagamento non completato</span><span class="ora">Ordine #${ritorno.numero} non confermato</span>
+      <span class="muted">${esc(ritorno.msg || 'Non hai completato il pagamento. Puoi riprovare: il posto nel forno resta tenuto per qualche minuto.')}</span>
+      <button class="primary" data-act="ripaga" style="margin-top:8px">Riprova a pagare</button>
+      <button class="ghost" data-act="chiudiRitorno">Chiudi</button>`}</div></div>`; return;
+  }
   if (done) {
     m.innerHTML = `<div class="overlay"><div class="done" role="dialog" aria-label="Ordine confermato">
       <span class="label">Ordine confermato</span><span class="num">${done.numero}</span>
-      <span class="muted">Grazie ${esc(done.nome)}, passa a ritirare alle</span>
+      <span class="muted">Grazie${done.nome ? ' ' + esc(done.nome) : ''}, passa a ritirare alle</span>
       <span class="ora">${ora(done.ritiro)}${giorno(done.ritiro) ? ' · ' + esc(giorno(done.ritiro)) : ''}</span>
-      <span class="muted">Totale da pagare al ritiro: <span class="mono">${eur(done.totale)}</span></span>
+      <span class="muted">${done.pagato ? 'Pagato online' : 'Totale da pagare al ritiro'}: <span class="mono">${eur(done.totale)}</span></span>
       ${TOTEM ? '<span class="muted" style="font-size:13px">Ricorda il numero: ti chiamiamo con questo.</span>' : '<span class="muted" style="font-size:13px">Puoi seguire lo stato del tuo ordine da questa pagina.</span>'}
       <button class="primary" data-act="nuovo" style="margin-top:8px">${TOTEM ? 'Fine' : 'Chiudi'}</button></div></div>`; return;
   }
@@ -206,7 +228,40 @@ function renderModal() {
 }
 
 let totemTimer = null;
+// Porta il cliente sulla pagina di pagamento sicura di Stripe
+async function vaiAlPagamento(id, numero) {
+  const { data, error } = await invoca('pagamento-checkout', { ordine_id: id });
+  if (data && data.url) { location.href = data.url; return true; }
+  ritorno = { id, numero: numero || ritorno?.numero || '', msg: error || 'Non riesco ad aprire la pagina di pagamento.' };
+  render(); return false;
+}
+// Ritorno da Stripe: ?pagamento=ok|annullato&ordine=…
+async function gestisciRitorno() {
+  const esito = params.get('pagamento'), id = params.get('ordine');
+  if (!esito || !id) return;
+  history.replaceState(null, '', location.pathname + '?p=' + encodeURIComponent(SLUG));
+  ultimo = { id }; lsSet('pz_ultimo_' + SLUG, ultimo);
+  if (esito === 'ok') {
+    ritorno = { id, attesa: true }; render();
+    // la conferma arriva da Stripe al database: aspetto qualche secondo
+    for (let i = 0; i < 15; i++) {
+      const { data } = await sb.rpc('stato_ordine', { p_ordine: id });
+      if (data && data.stato !== 'attesa_pagamento') {
+        ritorno = null; statoUltimo = data;
+        done = { ...data, nome: cliente.nome || '' }; render(); return;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    ritorno = null; render(); toast('Il pagamento è in verifica: lo stato dell\'ordine si aggiorna da solo.'); controllaUltimo();
+  } else {
+    const { data } = await sb.rpc('stato_ordine', { p_ordine: id });
+    if (data && data.stato === 'attesa_pagamento') { ritorno = { id, numero: data.numero }; render(); }
+  }
+}
 const ACT = {
+  paga: d => { pagScelta = d.v; render(); },
+  ripaga: () => vaiAlPagamento(ritorno.id),
+  chiudiRitorno: () => { ritorno = null; render(); controllaUltimo(); },
   apri: d => { if (!formati.length) { toast('La pizzeria non ha ancora impostato i formati', true); return; }
     const imp = impasti.find(i => i.disponibile);
     B = { tipo: d.tipo, pizza: d.p || null, formato: formati[0].id, impasto: imp ? imp.id : null, aggiunte: [], tolti: [], qta: 1 }; renderModal(); },
@@ -221,11 +276,19 @@ const ACT = {
   conferma: async () => {
     if (!cliente.nome.trim()) { errore = 'Scrivi un nome, così ti chiamiamo al ritiro.'; render(); $('#c-nome')?.focus(); return; }
     inviando = true; errore = ''; render();
+    const online = pagaOnline();
     const { data, error } = await sb.rpc('crea_ordine', { p_pizzeria: P.id, p_nome: cliente.nome.trim(), p_righe: perRpc(cart),
       p_telefono: TOTEM ? null : cliente.tel.trim() || null, p_canale: TOTEM ? 'totem' : 'web',
-      p_preferito: cliente.quando ? new Date(+cliente.quando).toISOString() : null });
+      p_preferito: cliente.quando ? new Date(+cliente.quando).toISOString() : null, p_pagamento: online ? 'online' : 'al_ritiro' });
+    if (error) { inviando = false; errore = msgErr(error); render(); aggiornaStima(); return; }
+    if (online) {
+      ultimo = { id: data.id }; lsSet('pz_ultimo_' + SLUG, ultimo);
+      cart = []; stimaRes = null;
+      const ok = await vaiAlPagamento(data.id, data.numero);
+      inviando = false; if (!ok) render();
+      return;
+    }
     inviando = false;
-    if (error) { errore = msgErr(error); render(); aggiornaStima(); return; }
     done = { ...data, nome: cliente.nome.trim() };
     if (!TOTEM) { ultimo = { id: data.id }; lsSet('pz_ultimo_' + SLUG, ultimo); statoUltimo = { numero: data.numero, stato: 'ricevuto', ritiro: data.ritiro, totale: data.totale }; }
     cart = []; cliente = { nome: TOTEM ? '' : cliente.nome, tel: TOTEM ? '' : cliente.tel, quando: '' }; stimaRes = null; render();
@@ -243,7 +306,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && B) { B = n
 // ogni 30 secondi aggiorna la stima (la coda cambia) e lo stato dell'ultimo ordine
 setInterval(() => { if (!P) return; aggiornaStima(); controllaUltimo(); }, 30000);
 // ogni 5 minuti ricarica il listino (ingredienti finiti, prezzi cambiati)
-setInterval(() => { const a = document.activeElement; if (!B && !done && !inviando && !(a && /INPUT|SELECT/.test(a.tagName))) carica(); }, 300000);
+setInterval(() => { const a = document.activeElement; if (!B && !done && !ritorno && !inviando && !(a && /INPUT|SELECT/.test(a.tagName))) carica(); }, 300000);
 carica();
 </script>
 </body>

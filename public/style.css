@@ -192,3 +192,8 @@ a.tab{text-decoration:none;display:inline-block}
 code.sel{font-family:var(--f-mono);font-size:13px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px;user-select:all;overflow-wrap:anywhere}
 .toast.bad{background:var(--hot);color:#fff}
 .del.sure{font-size:12px;font-weight:600;white-space:nowrap}
+.pay-box{display:flex;flex-direction:column;gap:12px;max-width:560px}
+.pay-box .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.pay-box .acts{display:flex;gap:8px;flex-wrap:wrap}
+a.ghost{text-decoration:none;color:inherit;display:inline-block}
+.pay-box select{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:9px 10px;width:100%}

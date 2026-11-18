@@ -22,7 +22,8 @@
 <script src="common.js"></script>
 <script>
 let utente = null, P = null, view = 'coda', ordini = [], ritiratiOggi = 0, conferma = null, canale = null;
-let D = { formati: [], impasti: [], ingredienti: [], pizze: [], pi: [] };
+let D = { formati: [], impasti: [], ingredienti: [], pizze: [], pi: [], stripe: null };
+let visti = null, stripeBusy = false;
 let authMode = 'login', authMsg = '', authBusy = false;
 
 /* ---------- accesso ---------- */
@@ -36,6 +37,14 @@ async function avvio() {
   P = r ? r.pizzerie : null;
   if (P) { await Promise.all([caricaOrdini(), caricaImpostazioni()]); ascolta(); }
   render();
+  const st = params.get('stripe');
+  if (P && st) {
+    history.replaceState(null, '', location.pathname + '?p=' + encodeURIComponent(P.slug));
+    view = 'imp';
+    if (st === 'riprova') return ACT.stripe({ a: 'collega' });
+    await aggiornaStripe(); render();
+    toast(P.pagamenti_attivi ? 'Pagamenti online attivi' : 'Configurazione Stripe non ancora completa');
+  }
 }
 sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') { utente = null; P = null; render(); } });
 
@@ -87,9 +96,10 @@ function ascolta() {
   canale = sb.channel('ordini-' + P.id)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'ordini', filter: 'pizzeria_id=eq.' + P.id }, (ev) => {
       clearTimeout(t); t = setTimeout(async () => {
-        const nuovo = ev.eventType === 'INSERT';
+        const prima = new Set(ordini.map(o => o.id));
         await caricaOrdini(); if (view === 'coda') render();
-        if (nuovo) { toast(`Nuovo ordine #${ev.new.numero} da ${ev.new.nome_cliente}`); suona(); }
+        const nuovi = ordini.filter(o => !prima.has(o.id));
+        if (nuovi.length) { const o = nuovi[0]; toast(`Nuovo ordine #${o.numero} da ${o.nome_cliente}${o.pagato ? ' · pagato online' : ''}`); suona(); }
       }, 300);
     }).subscribe();
 }
@@ -115,7 +125,7 @@ function vCoda() {
         const det = [r.formato_nome, r.impasto_nome && r.impasto_nome !== 'Classico' ? r.impasto_nome : '',
           r.aggiunte.length ? '+ ' + r.aggiunte.map(x => x.nome).join(', ') : '', r.tolti.length ? 'senza ' + r.tolti.map(x => x.nome).join(', ') : ''].filter(Boolean).join(' · ');
         return `<li>${r.quantita}× ${esc(r.nome)}<small>${esc(det)}</small></li>`; }).join('')}</ul>
-      <div class="top"><span class="muted">Totale</span><span class="mono">${eur(o.totale)}</span></div>
+      <div class="top"><span class="pill ${o.pagato ? 'pronto' : ''}">${o.pagato ? 'Pagato online' : 'Da pagare'}</span><span class="mono">${eur(o.totale)}</span></div>
       <div class="acts"><button class="primary" data-act="stato" data-id="${o.id}" data-s="${next[o.stato][0]}">${next[o.stato][1]}</button>
         <button class="ghost danger" data-act="annulla" data-id="${o.id}">${conferma === o.id ? 'Tocca di nuovo per annullare' : 'Annulla'}</button></div>
     </article>`;
@@ -138,7 +148,8 @@ async function caricaImpostazioni() {
   const err = [f, i, g, z].find(x => x.error); if (err) { toast(msgErr(err.error), true); return; }
   const ids = z.data.map(p => p.id);
   const pi = ids.length ? await sb.from('pizza_ingredienti').select('*').in('pizza_id', ids) : { data: [] };
-  D = { formati: f.data, impasti: i.data, ingredienti: g.data, pizze: z.data, pi: pi.data || [] };
+  const ps = await sb.from('pizzerie_stripe').select('*').eq('pizzeria_id', P.id).maybeSingle();
+  D = { formati: f.data, impasti: i.data, ingredienti: g.data, pizze: z.data, pi: pi.data || [], stripe: ps.data || null };
 }
 const ingrDi = id => D.pi.filter(x => x.pizza_id === id).map(x => x.ingrediente_id);
 const nomeIngr = id => D.ingredienti.find(g => g.id === id)?.nome || '';
@@ -170,6 +181,7 @@ function vImp() {
       <div class="grid-gen">${gen('nome', 'Nome pizzeria')}${gen('apertura', 'Apertura', 'time')}${gen('chiusura', 'Chiusura', 'time')}
       ${gen('capacita_forno', 'Posti nel forno', 'number', 'min="1"')}${gen('margine_minuti', 'Margine di sicurezza (min)', 'number', 'min="0"')}
       ${gen('prezzo_base_pers', 'Prezzo base pizza personalizzata (€)', 'number')}${gen('descrizione_base', 'Base sempre inclusa')}</div></section>
+    ${vPagamenti()}
     <section class="set-sec"><h2 class="sec-h">Formati</h2>
       <p class="muted">Il tempo è quello medio dalla stesura all'uscita dal forno. I posti dicono quanto spazio occupa nel forno: con 6 posti entrano 6 normali oppure 3 famiglia. Il moltiplicatore si applica al prezzo degli ingredienti aggiunti.</p>
       <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Minuti</th><th>Posti</th><th>Supplemento €</th><th>× aggiunte</th><th>Attivo</th><th></th></tr></thead><tbody>${formati}</tbody></table></div>
@@ -185,6 +197,33 @@ function vImp() {
       <p class="muted">Prezzo della pizza in formato normale. Per gli altri formati si aggiunge il supplemento del formato.</p>
       <div class="tbl-wrap"><table><thead><tr><th>Pizza</th><th>Prezzo €</th><th>Ingredienti oltre la base</th><th>In listino</th><th></th></tr></thead><tbody>${pizze}</tbody></table></div>
       <button class="ghost add" data-act="add" data-t="pizze">+ Aggiungi pizza</button></section>`;
+}
+
+async function aggiornaStripe() {
+  const { data, error } = await invoca('stripe-collega', { pizzeria_id: P.id, azione: 'stato' });
+  if (error) { toast(error, true); return; }
+  P.pagamenti_attivi = data.pagamenti_attivi;
+  const ps = await sb.from('pizzerie_stripe').select('*').eq('pizzeria_id', P.id).maybeSingle();
+  D.stripe = ps.data || null;
+}
+function vPagamenti() {
+  const s = D.stripe, attivo = !!(s && s.pagamenti_attivi);
+  const stato = !s ? ['', 'Non collegato'] : attivo ? ['pronto', 'Attivo'] : ['preparazione', 'Configurazione da completare'];
+  const btn = stripeBusy ? '<button class="ghost" disabled>Attendi…</button>'
+    : !s ? '<button class="primary" data-act="stripe" data-a="collega">Collega Stripe</button>'
+    : !attivo ? '<button class="primary" data-act="stripe" data-a="collega">Completa la configurazione su Stripe</button> <button class="ghost" data-act="stripe" data-a="stato">Controlla di nuovo</button>'
+    : '<a class="ghost" href="https://dashboard.stripe.com" target="_blank" rel="noopener">Apri il pannello Stripe</a> <button class="ghost" data-act="stripe" data-a="stato">Aggiorna stato</button>';
+  const opt = (v, l) => `<option value="${v}" ${P.pagamento_online === v ? 'selected' : ''} ${v !== 'no' && !attivo ? 'disabled' : ''}>${l}</option>`;
+  return `<section class="set-sec"><h2 class="sec-h">Pagamenti online</h2>
+    <p class="muted">Gli incassi arrivano direttamente sul conto Stripe della pizzeria. Il cliente paga con carta di credito o debito, Apple Pay, Google Pay e PayPal. PayPal si attiva nel pannello Stripe, in Impostazioni → Metodi di pagamento. Al totem si paga sempre alla cassa.</p>
+    <div class="pay-box panel">
+      <div class="top"><span class="label">Conto Stripe</span><span class="pill ${stato[0]}">${stato[1]}</span></div>
+      <div class="acts">${btn}</div>
+      <div class="field"><label class="label" for="p-pagamento_online">Pagamento per gli ordini online</label>
+        <select id="p-pagamento_online" data-t="pizzerie" data-id="${P.id}" data-f="pagamento_online">
+          ${opt('no', 'Solo al ritiro')}${opt('facoltativo', 'Il cliente sceglie: online o al ritiro')}${opt('obbligatorio', 'Sempre online, prima del ritiro')}</select>
+        ${!attivo ? '<span class="muted" style="font-size:13px">Le opzioni online si sbloccano quando il conto Stripe è attivo.</span>' : ''}</div>
+    </div></section>`;
 }
 
 /* ---------- vista ---------- */
@@ -214,6 +253,15 @@ const NUOVI = {
   pizze: () => ({ nome: 'Nuova pizza', prezzo: 7, ordine: D.pizze.length + 1 }),
 };
 const ACT = {
+  stripe: async d => {
+    stripeBusy = true; render();
+    if (d.a === 'collega') {
+      const { data, error } = await invoca('stripe-collega', { pizzeria_id: P.id, azione: 'collega' });
+      if (data && data.url) { location.href = data.url; return; }
+      stripeBusy = false; render(); return toast(error || 'Non riesco ad aprire Stripe', true);
+    }
+    await aggiornaStripe(); stripeBusy = false; render();
+  },
   view: d => { view = d.v; conferma = null; render(); scrollTo(0, 0); },
   authmode: () => { authMode = authMode === 'login' ? 'signup' : 'login'; authMsg = ''; render(); },
   esci: async () => { if (canale) sb.removeChannel(canale); await sb.auth.signOut(); utente = null; P = null; render(); },
