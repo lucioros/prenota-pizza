@@ -235,3 +235,9 @@ a.ghost{text-decoration:none;color:inherit;display:inline-block}
 .subtabs .chip{flex:none;font-weight:500}
 .subtabs .chip[aria-current="true"]{background:var(--ink);border-color:var(--ink);color:var(--bg)}
 .subtabs + .set-sec{margin-top:18px}
+.coda-top{grid-template-columns:auto auto minmax(0,1fr)}
+@media (max-width:860px){.coda-top{grid-template-columns:1fr 1fr}.coda-top>.panel:last-child{grid-column:1/-1}}
+@media (max-width:480px){.coda-top{grid-template-columns:1fr}}
+.oven.banco i{border-radius:6px}
+.oven.banco i.on{background:var(--warn);border-color:var(--warn)}
+.pz-fasce{display:flex;flex-direction:column;gap:8px;margin-top:12px;align-items:flex-start}

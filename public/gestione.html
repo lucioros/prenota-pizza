@@ -107,9 +107,19 @@ function ascolta() {
 let audio;
 function suona() { try { audio = audio || new AudioContext(); const o = audio.createOscillator(), g = audio.createGain(); o.frequency.value = 880; g.gain.value = .15; o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + .25); } catch (e) { } }
 
+// quanti pizzaioli lavorano in un certo momento (stessa regola del database)
+function pizzaioliAlle(t) {
+  const d = new Date(t), hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  for (const f of P.pizzaioli_fasce || []) if (hhmm >= f.da && hhmm < f.a) return Math.max(0, +f.n);
+  return +P.pizzaioli || 1;
+}
 function vCoda() {
   const now = Date.now(), cap = +P.capacita_forno;
-  const slots = ordini.flatMap(o => o.slot_forno.map(s => ({ start: +new Date(s.inizio), end: +new Date(s.fine), posti: s.posti })));
+  const tutti = ordini.flatMap(o => o.slot_forno.map(s => ({ risorsa: s.risorsa || 'forno', stato: o.stato, start: +new Date(s.inizio), end: +new Date(s.fine), posti: s.posti })));
+  const slots = tutti.filter(s => s.risorsa === 'forno');
+  const banco = tutti.filter(s => s.risorsa === 'banco' && s.stato !== 'pronto');
+  const alBanco = x => banco.filter(s => s.start <= x && x < s.end).length;
+  const nPz = pizzaioliAlle(now), bancoOra = Math.min(alBanco(now), Math.max(nPz, alBanco(now)));
   const usati = x => slots.reduce((a, s) => a + (s.start <= x && x < s.end ? s.posti : 0), 0);
   const adesso = Math.min(cap, usati(now)), nCell = Math.min(cap, 12);
   const bars = Array.from({ length: 12 }, (_, k) => { const x = now + k * 5 * MIN, u = Math.min(cap, usati(x)); return `<div class="${u >= cap ? 'full' : ''}" style="height:${Math.max(3, u / cap * 100)}%" title="${ora(x)}: ${u}/${cap} posti"></div>`; }).join('');
@@ -137,7 +147,10 @@ function vCoda() {
     <div class="coda-top">
       <div class="panel"><span class="label">Forno adesso</span><div class="mono" style="font-size:26px">${adesso}/${cap} <span class="muted" style="font-size:14px;font-family:var(--f-body)">posti</span></div>
         <div class="oven" style="--cap:${nCell}">${Array.from({ length: nCell }, (_, i) => `<i class="${i < adesso ? 'on' : ''}"></i>`).join('')}</div></div>
-      <div class="panel"><span class="label">Occupazione prossimi 60 minuti</span><div class="tl">${bars}</div><div class="tl-x">${lab}</div></div>
+      <div class="panel"><span class="label">Banco adesso</span><div class="mono" style="font-size:26px">${bancoOra}/${nPz} <span class="muted" style="font-size:14px;font-family:var(--f-body)">${nPz === 1 ? 'pizzaiolo' : 'pizzaioli'}</span></div>
+        <div class="oven banco" style="--cap:${Math.max(1, Math.min(nPz, 12))}">${Array.from({ length: Math.min(nPz, 12) }, (_, i) => `<i class="${i < bancoOra ? 'on' : ''}"></i>`).join('')}</div>
+        <span class="muted" style="font-size:12px">${bancoOra >= nPz && nPz > 0 ? 'Il banco è il collo di bottiglia' : 'Pizzaioli liberi'}</span></div>
+      <div class="panel"><span class="label">Forno, prossimi 60 minuti</span><div class="tl">${bars}</div><div class="tl-x">${lab}</div></div>
     </div>
     <span class="label">${ordini.length} ${ordini.length === 1 ? "ordine" : "ordini"} da preparare${ritiratiOggi ? ` · ${ritiratiOggi} ritirati oggi` : ''}</span>
     ${ordini.length ? `<div class="tickets">${tk}</div>` : `<div class="empty" style="margin-top:14px">Nessun ordine in coda. I nuovi ordini da app e totem compaiono qui da soli.</div>`}`;
@@ -167,8 +180,8 @@ function vImp() {
     : `<td><input type="${type}" id="${t}-${row.id}-${f}" data-t="${t}" data-id="${row.id}" data-f="${f}" value="${esc(row[f])}" ${type === 'number' ? 'step="any" inputmode="decimal"' : ''} ${extra} aria-label="${f}"></td>`;
   const del = (t, row) => `<td class="c"><button class="del ${conferma === row.id ? 'sure' : ''}" data-act="del" data-t="${t}" data-id="${row.id}" aria-label="Elimina">${conferma === row.id ? 'Elimina?' : '×'}</button></td>`;
   const cap = +P.capacita_forno;
-  const formati = D.formati.map(f => `<tr>${cell('formati', f, 'nome')}${cell('formati', f, 'minuti', 'number', 'min="1"')}${cell('formati', f, 'posti', 'number', 'min="1"')}${cell('formati', f, 'supplemento', 'number')}${cell('formati', f, 'moltiplicatore_aggiunte', 'number')}${cell('formati', f, 'attivo', 'checkbox')}${del('formati', f)}</tr>
-    ${+f.posti > cap ? `<tr><td colspan="7" class="warn-line">Questo formato occupa più posti di quanti ne abbia il forno.</td></tr>` : ''}`).join('');
+  const formati = D.formati.map(f => `<tr>${cell('formati', f, 'nome')}${cell('formati', f, 'preparazione', 'number', 'min="0"')}${cell('formati', f, 'minuti', 'number', 'min="0.25"')}${cell('formati', f, 'posti', 'number', 'min="1"')}${cell('formati', f, 'supplemento', 'number')}${cell('formati', f, 'moltiplicatore_aggiunte', 'number')}${cell('formati', f, 'attivo', 'checkbox')}${del('formati', f)}</tr>
+    ${+f.posti > cap ? `<tr><td colspan="8" class="warn-line">Questo formato occupa più posti di quanti ne abbia il forno.</td></tr>` : ''}`).join('');
   const impasti = D.impasti.map(m => `<tr>${cell('impasti', m, 'nome')}${cell('impasti', m, 'sovrapprezzo', 'number')}${cell('impasti', m, 'disponibile', 'checkbox')}${del('impasti', m)}</tr>`).join('');
   const cats = [...new Set([...CATS, ...D.ingredienti.map(g => g.categoria)])];
   const ingr = D.ingredienti.map(g => `<tr>${cell('ingredienti', g, 'nome')}<td><select id="ingredienti-${g.id}-categoria" data-t="ingredienti" data-id="${g.id}" data-f="categoria" aria-label="categoria">${cats.map(c => `<option ${c === g.categoria ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></td>${cell('ingredienti', g, 'prezzo', 'number')}${cell('ingredienti', g, 'disponibile', 'checkbox')}${del('ingredienti', g)}</tr>`).join('');
@@ -188,9 +201,17 @@ function vImp() {
     forno: () => `<section class="set-sec"><h2 class="sec-h">Forno</h2>
       <p class="muted">Servono a calcolare l'orario di ritiro. Il margine si aggiunge a ogni ordine per stare larghi.</p>
       <div class="grid-gen">${gen('capacita_forno', 'Posti nel forno', 'number', 'min="1"')}${gen('margine_minuti', 'Margine di sicurezza (min)', 'number', 'min="0"')}</div></section>
+      <section class="set-sec"><h2 class="sec-h">Pizzaioli</h2>
+      <p class="muted">Quante persone preparano le pizze. Ogni pizzaiolo prepara una pizza alla volta: l'app tiene conto sia del banco sia del forno. Se in certe ore lavorano più o meno persone, aggiungi una fascia; con 0 il banco è chiuso (per esempio una pausa).</p>
+      <div class="grid-gen">${gen('pizzaioli', 'Pizzaioli di solito', 'number', 'min="1"')}</div>
+      <div class="pz-fasce">${(P.pizzaioli_fasce || []).map((x, i) => `<div class="fascia">
+        <input type="time" aria-label="dalle" data-pzf="${i}.da" value="${esc(x.da)}"> – <input type="time" aria-label="alle" data-pzf="${i}.a" value="${esc(x.a)}">
+        <input type="number" min="0" aria-label="pizzaioli" data-pzf="${i}.n" value="${esc(x.n)}" style="width:70px"> pizzaioli
+        <button class="del" data-act="pzfDel" data-i="${i}" aria-label="Togli fascia">×</button></div>`).join('')}
+        <button class="ghost" data-act="pzfAdd">+ Aggiungi fascia oraria</button></div></section>
       <section class="set-sec"><h2 class="sec-h">Formati</h2>
-      <p class="muted">Il tempo è quello medio dalla stesura all'uscita dal forno. I posti dicono quanto spazio occupa nel forno: con 6 posti entrano 6 normali oppure 3 famiglia. Il supplemento si aggiunge al prezzo di listino; il moltiplicatore si applica al prezzo degli ingredienti aggiunti.</p>
-      <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Minuti</th><th>Posti</th><th>Supplemento €</th><th>× aggiunte</th><th>Attivo</th><th></th></tr></thead><tbody>${formati}</tbody></table></div>
+      <p class="muted">Preparazione: tempo medio di un pizzaiolo per stendere e condire una pizza. Cottura: quanto resta nel forno. Puoi usare i decimali, per esempio 1,5 per un minuto e mezzo. I posti dicono quanto spazio occupa nel forno: con 6 posti entrano 6 normali oppure 3 famiglia. Il supplemento si aggiunge al prezzo di listino; il moltiplicatore si applica al prezzo degli ingredienti aggiunti.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Preparazione (min)</th><th>Cottura (min)</th><th>Posti nel forno</th><th>Supplemento €</th><th>× aggiunte</th><th>Attivo</th><th></th></tr></thead><tbody>${formati}</tbody></table></div>
       <button class="ghost add" data-act="add" data-t="formati">+ Aggiungi formato</button></section>`,
     listino: () => `<section class="set-sec"><h2 class="sec-h">Pizze del listino</h2>
       <p class="muted">Prezzo della pizza in formato normale. Per gli altri formati si aggiunge il supplemento del formato.</p>
@@ -350,7 +371,7 @@ async function salva(t, id, patch) {
   toast('Salvato'); return true;
 }
 const NUOVI = {
-  formati: () => ({ nome: 'Nuovo formato', minuti: 8, posti: 1, supplemento: 0, moltiplicatore_aggiunte: 1, ordine: D.formati.length + 1 }),
+  formati: () => ({ nome: 'Nuovo formato', preparazione: 2, minuti: 6, posti: 1, supplemento: 0, moltiplicatore_aggiunte: 1, ordine: D.formati.length + 1 }),
   impasti: () => ({ nome: 'Nuovo impasto', sovrapprezzo: 0, ordine: D.impasti.length + 1 }),
   ingredienti: () => ({ nome: 'Nuovo ingrediente', categoria: 'Extra', prezzo: 1, ordine: D.ingredienti.length + 1 }),
   pizze: () => ({ nome: 'Nuova pizza', prezzo: 7, ordine: D.pizze.length + 1 }),
@@ -401,6 +422,8 @@ const ACT = {
     P.fedelta.giorni_doppi.giorni = arr.includes(g) ? arr.filter(x => x !== g) : [...arr, g].sort();
     if (await salva('pizzerie', P.id, { fedelta: P.fedelta })) render();
   },
+  pzfAdd: async () => { P.pizzaioli_fasce = [...(P.pizzaioli_fasce || []), { da: '19:30', a: '22:00', n: 2 }]; if (await salva('pizzerie', P.id, { pizzaioli_fasce: P.pizzaioli_fasce })) render(); },
+  pzfDel: async d => { P.pizzaioli_fasce.splice(+d.i, 1); if (await salva('pizzerie', P.id, { pizzaioli_fasce: P.pizzaioli_fasce })) render(); },
   fasciaAdd: async () => { P.fedelta.fasce.fasce = [...(P.fedelta.fasce.fasce || []), { da: '18:00', a: '19:00', perc: 10 }]; if (await salva('pizzerie', P.id, { fedelta: P.fedelta })) render(); },
   fasciaDel: async d => { P.fedelta.fasce.fasce.splice(+d.i, 1); if (await salva('pizzerie', P.id, { fedelta: P.fedelta })) render(); },
   authmode: () => { authMode = authMode === 'login' ? 'signup' : 'login'; authMsg = ''; render(); },
@@ -461,6 +484,14 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', async e => {
   const t = e.target;
+  if (t.dataset.pzf) {
+    const [i, k] = t.dataset.pzf.split('.');
+    const v = k === 'n' ? Math.max(0, Math.round(+t.value || 0)) : t.value;
+    if (!P.pizzaioli_fasce[+i]) return;
+    P.pizzaioli_fasce[+i][k] = v;
+    await salva('pizzerie', P.id, { pizzaioli_fasce: P.pizzaioli_fasce });
+    return;
+  }
   if (t.dataset.fed) {
     let v = t.type === 'checkbox' ? t.checked : t.type === 'number' ? parseFloat(String(t.value).replace(',', '.')) : t.value;
     if (t.type === 'number' && !isFinite(v)) return toast('Scrivi un numero', true);
@@ -476,7 +507,7 @@ document.addEventListener('change', async e => {
   let val = t.type === 'checkbox' ? t.checked : t.type === 'number' ? parseFloat(String(t.value).replace(',', '.')) : t.value;
   if (t.type === 'number' && !isFinite(val)) { toast('Scrivi un numero', true); return; }
   if (t.type !== 'checkbox' && t.type !== 'number' && !String(val).trim()) { toast('Il campo non può restare vuoto', true); return; }
-  if (['minuti', 'posti', 'capacita_forno', 'margine_minuti'].includes(t.dataset.f)) val = Math.round(val);
+  if (['posti', 'capacita_forno', 'margine_minuti', 'pizzaioli'].includes(t.dataset.f)) val = Math.round(val);
   const ok = await salva(t.dataset.t, t.dataset.id, { [t.dataset.f]: val });
   if (!ok) return;
   if (t.dataset.t === 'pizzerie') { P[t.dataset.f] = val; $('#brand').textContent = P.nome; if (t.dataset.f === 'capacita_forno') render(); }

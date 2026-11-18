@@ -294,7 +294,7 @@ function renderModal() {
   }
   if (!B) { m.innerHTML = ''; return; }
   const pz = B.tipo === 'listino' ? PZ(B.pizza) : null;
-  const fOpt = formati.map(f => `<button class="opt" data-act="b" data-k="formato" data-v="${f.id}" aria-pressed="${B.formato === f.id}">${esc(f.nome)}<small>${eur(prezzo({ ...B, formato: f.id }))} · ~${f.minuti} min</small></button>`).join('');
+  const fOpt = formati.map(f => `<button class="opt" data-act="b" data-k="formato" data-v="${f.id}" aria-pressed="${B.formato === f.id}">${esc(f.nome)}<small>${eur(prezzo({ ...B, formato: f.id }))} · ~${Math.round(+f.preparazione + +f.minuti)} min</small></button>`).join('');
   const iOpt = impasti.filter(i => i.disponibile).map(i => `<button class="opt" data-act="b" data-k="impasto" data-v="${i.id}" aria-pressed="${B.impasto === i.id}">${esc(i.nome)}<small>${+i.sovrapprezzo ? '+ ' + eur(i.sovrapprezzo) : 'incluso'}</small></button>`).join('');
   const f = F(B.formato), base = pz ? pz.ingr : [];
   const inclusi = base.map(id => `<button class="chip ${B.tolti.includes(id) ? 'off' : ''}" data-act="tolto" data-g="${id}">${esc(G(id)?.nome)}</button>`).join('');
