@@ -258,7 +258,6 @@ function vFedelta() {
       ${sw('timbri', 'Tessera a timbri', 'Ogni pizza ordinata vale un timbro. Raggiunta la soglia, il cliente può avere in omaggio la pizza meno cara dell\'ordine.', num('timbri.soglia', 'Pizze per un omaggio', 'min="1"'))}
       ${sw('giorni_doppi', 'Timbri doppi nei giorni lenti', 'Nei giorni scelti ogni pizza vale due timbri.', `<div class="chips">${GG.map((g, i) => `<button class="chip" data-act="fedGiorno" data-g="${i}" aria-pressed="${(f.giorni_doppi.giorni || []).includes(i)}">${g}</button>`).join('')}</div>`)}
       ${sw('fasce', 'Sconto nelle fasce tranquille', 'Sconto a chi sceglie di ritirare in un orario in cui il forno è meno pieno.', `${fasce}<button class="ghost" data-act="fasciaAdd">+ Aggiungi fascia</button>`)}
-      ${sw('compleanno', 'Regalo di compleanno', 'Sconto nei 3 giorni prima e dopo il compleanno, una volta l\'anno. Vale se la data è stata inserita da almeno 30 giorni.', num('compleanno.perc', 'Sconto %'))}
       ${sw('amico', 'Porta un amico', 'Ogni cliente ha un codice da condividere. L\'amico ha uno sconto sul primo ordine; chi l\'ha invitato riceve lo stesso importo di credito quando l\'amico ritira.', num('amico.sconto', 'Sconto e credito (€)'))}
       ${sw('cimanchi', 'Ci manchi', 'Sconto automatico per chi non ordina da un po\'. Nella pagina Clienti trovi chi ricontattare su WhatsApp.', num('cimanchi.giorni', 'Dopo quanti giorni') + num('cimanchi.perc', 'Sconto %'))}
       ${sw('codici', 'Codici sconto', 'Codici da scrivere su volantini, social o per una serata. Puoi dare una scadenza e un numero massimo di usi.')}
@@ -270,7 +269,7 @@ function vFedelta() {
     <h3 class="sub-h">Messaggi WhatsApp</h3>
     <p class="muted">Testi già pronti per i pulsanti WhatsApp della pagina Clienti. Puoi usare {nome}, {pizzeria} e {link}.</p>
     <div class="msgs">
-      ${[['offerta', 'Offerta o novità'], ['cimanchi', 'Ci manchi'], ['compleanno', 'Compleanno']].map(([k, l]) => `<div class="field"><label class="label" for="msg-${k}">${l}</label><textarea id="msg-${k}" rows="3" data-fed="messaggi.${k}">${esc(f.messaggi?.[k] || '')}</textarea></div>`).join('')}
+      ${[['offerta', 'Offerta o novità'], ['cimanchi', 'Ci manchi']].map(([k, l]) => `<div class="field"><label class="label" for="msg-${k}">${l}</label><textarea id="msg-${k}" rows="3" data-fed="messaggi.${k}">${esc(f.messaggi?.[k] || '')}</textarea></div>`).join('')}
     </div></section>`;
 }
 
@@ -280,11 +279,6 @@ async function caricaClienti() {
   if (a.error) toast(msgErr(a.error), true);
   clienti = a.data || []; topPers = b.data || [];
 }
-function giorniA(mmdd) { // giorni mancanti al prossimo compleanno
-  if (!mmdd) return 999; const [m, d] = mmdd.split('-').map(Number), oggi = new Date(); oggi.setHours(0, 0, 0, 0);
-  let c = new Date(oggi.getFullYear(), m - 1, d); if (c < oggi) c = new Date(oggi.getFullYear() + 1, m - 1, d);
-  return Math.round((c - oggi) / DAY);
-}
 function waLink(c, tipo) {
   const link = location.href.replace(/gestione\.html.*$/, '') + '?p=' + encodeURIComponent(P.slug);
   const t = (P.fedelta.messaggi?.[tipo] || '').replaceAll('{nome}', c.nome.replace(' (prova)', '')).replaceAll('{pizzeria}', P.nome).replaceAll('{link}', link);
@@ -293,16 +287,15 @@ function waLink(c, tipo) {
 function vClienti() {
   const f = P.fedelta, gg = +f.cimanchi?.giorni || 30, now = Date.now();
   const assente = c => c.ultimo && now - new Date(c.ultimo) > gg * DAY;
-  const filtri = { tutti: ['Tutti', () => true], consenso: ['Con consenso WhatsApp', c => c.consenso], cimanchi: [`Non ordinano da ${gg}+ giorni`, assente], compleanno: ['Compleanno nei prossimi 7 giorni', c => giorniA(c.compleanno) <= 7] };
+  const filtri = { tutti: ['Tutti', () => true], consenso: ['Con consenso WhatsApp', c => c.consenso], cimanchi: [`Non ordinano da ${gg}+ giorni`, assente] };
   const q = cercaCli.toLowerCase();
   const lista = clienti.filter(filtri[filtroCli][1]).filter(c => !q || c.nome.toLowerCase().includes(q) || c.telefono.includes(q.replace(/\D/g, '') || '§'));
-  const tipoMsg = filtroCli === 'cimanchi' ? 'cimanchi' : filtroCli === 'compleanno' ? 'compleanno' : 'offerta';
+  const tipoMsg = filtroCli === 'cimanchi' ? 'cimanchi' : 'offerta';
   const righe = lista.map(c => `<tr>
     <td><b>${esc(c.nome)}</b><br><span class="mono muted" style="font-size:12px">+${esc(c.telefono)}</span></td>
     <td class="mono">${c.ordini}</td><td class="mono">${eur(c.speso)}</td>
     <td>${c.ultimo ? new Date(c.ultimo).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }) : '—'}${assente(c) ? ' <span class="pill preparazione">assente</span>' : ''}</td>
     <td class="mono">${f.timbri?.attivo ? c.timbri + '/' + f.timbri.soglia : '—'}</td>
-    <td>${c.compleanno ? c.compleanno.split('-').reverse().join('/') : '—'}</td>
     <td>${c.consenso ? '<span class="pill pronto">Sì</span>' : '<span class="pill">No</span>'}</td>
     <td class="acts-cell">${c.consenso ? `<a class="wa" href="${esc(waLink(c, tipoMsg))}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
       <button class="del ${conferma === c.id ? 'sure' : ''}" data-act="delCli" data-id="${c.id}" aria-label="Cancella cliente">${conferma === c.id ? 'Cancella?' : '×'}</button></td></tr>`).join('');
@@ -316,7 +309,7 @@ function vClienti() {
     <p class="muted" style="margin:0 0 14px;max-width:65ch">${tot} clienti salvati, ${cons} hanno accettato di ricevere offerte su WhatsApp. Il pulsante WhatsApp apre la chat con il messaggio già scritto: controlla e premi invio. Per scrivere a tanti insieme, copia i numeri e crea una lista broadcast in WhatsApp Business.</p>
     <div class="cli-bar"><div class="chips">${Object.entries(filtri).map(([k, [l]]) => `<button class="chip" data-act="filtro" data-v="${k}" aria-pressed="${filtroCli === k}">${l}</button>`).join('')}</div>
       <input id="cerca-cli" type="search" placeholder="Cerca nome o numero" value="${esc(cercaCli)}" aria-label="Cerca cliente"></div>
-    ${lista.length ? `<div class="tbl-wrap"><table><thead><tr><th>Cliente</th><th>Ordini</th><th>Speso</th><th>Ultimo</th><th>Timbri</th><th>Compleanno</th><th>WhatsApp</th><th></th></tr></thead><tbody>${righe}</tbody></table></div>`
+    ${lista.length ? `<div class="tbl-wrap"><table><thead><tr><th>Cliente</th><th>Ordini</th><th>Speso</th><th>Ultimo</th><th>Timbri</th><th>WhatsApp</th><th></th></tr></thead><tbody>${righe}</tbody></table></div>`
       : `<div class="empty">${tot ? 'Nessun cliente con questo filtro.' : 'Ancora nessun cliente salvato. Compaiono qui quando ordinano con il numero di telefono.'}</div>`}
     ${top}`;
 }

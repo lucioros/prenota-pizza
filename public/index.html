@@ -27,7 +27,7 @@ let P = null, formati = [], impasti = [], ingr = [], pizze = [];
 let cart = [], B = null, done = null, cliente = { nome: '', tel: '', quando: '' }, errore = '', inviando = false;
 let pagScelta = 'online', ritorno = null;
 // fedeltà: scheda del cliente trovata dal telefono e scelte fatte nel carrello
-let scheda = null, schedaTel = '', fid = { salva: true, consenso: false, consensoToccato: false, compleanno: '', codice: '', amico: params.get('invito') || '', usaPremio: false };
+let scheda = null, schedaTel = '', fid = { salva: true, consenso: false, consensoToccato: false, codice: '', amico: params.get('invito') || '', usaPremio: false };
 let stimaRes = null, stimaSeq = 0, ultimo = TOTEM ? null : lsGet('pz_ultimo_' + SLUG), statoUltimo = null;
 
 // come paga il cliente: al totem sempre alla cassa, senza Stripe attivo solo al ritiro
@@ -35,10 +35,10 @@ const modoPag = () => (TOTEM || !P.pagamenti_attivi) ? 'no' : P.pagamento_online
 const pagaOnline = () => modoPag() === 'obbligatorio' || (modoPag() === 'facoltativo' && pagScelta === 'online');
 const FED = () => P.fedelta || {};
 const on = k => !!(FED()[k] && FED()[k].attivo);
-const fedeltaAttiva = () => ['timbri', 'compleanno', 'amico', 'cimanchi'].some(on);
+const fedeltaAttiva = () => ['timbri', 'amico', 'cimanchi'].some(on);
 const telValido = t => String(t || '').replace(/\D/g, '').length >= 8;
 function perExtra() {
-  const x = { salva: fid.salva, compleanno: fid.compleanno || null, codice: fid.codice || null, codice_amico: fid.amico || null, usa_premio: fid.usaPremio };
+  const x = { salva: fid.salva, codice: fid.codice || null, codice_amico: fid.amico || null, usa_premio: fid.usaPremio };
   if (fid.consensoToccato) x.consenso = fid.consenso;
   return x;
 }
@@ -124,7 +124,6 @@ function vOfferte() {
   if (on('timbri')) out.push(`Ogni ${f.timbri.soglia} pizze una in omaggio`);
   if (on('giorni_doppi') && (f.giorni_doppi.giorni || []).length) out.push(`Timbri doppi il ${f.giorni_doppi.giorni.map(g => GG[g]).join(' e il ')}`);
   if (on('amico')) out.push(`Porta un amico: ${eur(f.amico.sconto)} di sconto a lui e a te`);
-  if (on('compleanno')) out.push(`−${f.compleanno.perc}% nella settimana del compleanno`);
   return out.length ? `<div class="offerte">${out.map(o => `<span class="offerta">${esc(o)}</span>`).join('')}</div>` : '';
 }
 
@@ -173,7 +172,6 @@ function vFid() {
   if (!scheda || schedaTel !== cliente.tel) return '<span class="muted" style="font-size:13px">Cerco la tua scheda…</span>';
   const f = FED();
   const consenso = `<label class="check"><input type="checkbox" id="c-consenso" data-chk="consenso" ${fid.consenso ? 'checked' : ''}> Voglio ricevere offerte e novità su WhatsApp</label>`;
-  const bday = on('compleanno') && !(scheda.trovato && scheda.compleanno_impostato) ? `<div class="field"><label class="label" for="c-bday">Compleanno (facoltativo, per il tuo regalo)</label><input id="c-bday" type="date" data-f="compleanno" value="${esc(fid.compleanno)}"></div>` : '';
   if (scheda.trovato) {
     const tot = scheda.soglia, n = Math.min(scheda.timbri, tot);
     const puo = on('timbri') && scheda.timbri >= tot;
@@ -183,12 +181,12 @@ function vFid() {
       ${puo ? `<button class="chip" data-act="premio" aria-pressed="${fid.usaPremio}">${fid.usaPremio ? '✓ ' : ''}Usa la pizza omaggio</button>` : ''}
       ${+scheda.credito > 0 ? `<span class="muted" style="font-size:13px">Hai ${eur(scheda.credito)} di credito per gli amici invitati: lo usi su questo ordine.</span>` : ''}
       ${scheda.solita && scheda.solita.length ? `<button class="ghost" data-act="solita">Riordina la tua solita (${scheda.solita.map(r => r.qta + '× ' + esc(r.nome)).join(', ')})</button>` : ''}
-      ${!scheda.consenso ? consenso : ''}${bday}
+      ${!scheda.consenso ? consenso : ''}
     </div>`;
   }
   return `<div class="fid">
     <label class="check"><input type="checkbox" id="c-salva" data-chk="salva" ${fid.salva ? 'checked' : ''}> Salva il mio numero per ${on('timbri') ? 'raccogliere timbri e ' : ''}ricevere i vantaggi</label>
-    ${fid.salva ? consenso + bday : ''}
+    ${fid.salva ? consenso : ''}
     <span class="muted" style="font-size:12px">Usiamo il numero solo per riconoscerti e, se lo scegli, per scriverti su WhatsApp. Puoi chiedere di cancellarlo quando vuoi.</span>
   </div>`;
 }
@@ -403,7 +401,7 @@ const ACT = {
 document.addEventListener('click', e => { const el = e.target.closest('[data-act]'); if (el) ACT[el.dataset.act]?.(el.dataset, el, e); });
 document.addEventListener('input', e => {
   const t = e.target;
-  if (t.dataset.f) { fid[t.dataset.f] = t.dataset.f === 'compleanno' ? t.value : t.value.toUpperCase().trim(); aggiornaStima(); return; }
+  if (t.dataset.f) { fid[t.dataset.f] = t.value.toUpperCase().trim(); aggiornaStima(); return; }
   if (!t.dataset.c) return;
   if (t.dataset.c === 'tel') { cliente.tel = t.value; cercaScheda(); return; }
   cliente[t.dataset.c] = t.value;
