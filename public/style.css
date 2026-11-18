@@ -231,3 +231,7 @@ a.ghost{text-decoration:none;color:inherit;display:inline-block}
 .wa{display:inline-block;background:#1f9d55;color:#fff;text-decoration:none;border-radius:6px;padding:5px 10px;font-size:13px;font-weight:600}
 .sconti-t{display:flex;flex-direction:column;font-size:12px;color:var(--accent)}
 .ghost.small{padding:4px 8px;font-size:12px}
+.subtabs{display:flex;flex-wrap:wrap;gap:6px;margin:18px 0 4px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.subtabs .chip{flex:none;font-weight:500}
+.subtabs .chip[aria-current="true"]{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.subtabs + .set-sec{margin-top:18px}

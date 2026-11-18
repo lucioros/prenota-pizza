@@ -41,7 +41,7 @@ async function avvio() {
   const st = params.get('stripe');
   if (P && st) {
     history.replaceState(null, '', location.pathname + '?p=' + encodeURIComponent(P.slug));
-    view = 'imp';
+    view = 'imp'; impTab = 'pagamenti';
     if (st === 'riprova') return ACT.stripe({ a: 'collega' });
     await aggiornaStripe(); render();
     toast(P.pagamenti_attivi ? 'Pagamenti online attivi' : 'Configurazione Stripe non ancora completa');
@@ -157,6 +157,9 @@ async function caricaImpostazioni() {
 const ingrDi = id => D.pi.filter(x => x.pizza_id === id).map(x => x.ingrediente_id);
 const nomeIngr = id => D.ingredienti.find(g => g.id === id)?.nome || '';
 
+const SCHEDE_IMP = [['generale', 'Pizzeria'], ['forno', 'Forno e formati'], ['listino', 'Listino'], ['ingredienti', 'Ingredienti e impasti'],
+  ['pagamenti', 'Pagamenti'], ['offerte', 'Fedeltà e offerte'], ['whatsapp', 'Messaggi WhatsApp']];
+let impTab = lsGet('pz_imp_tab') || 'generale';
 function vImp() {
   const gen = (f, label, type = 'text', extra = '') => `<div class="field"><label class="label" for="p-${f}">${label}</label><input id="p-${f}" type="${type}" data-t="pizzerie" data-id="${P.id}" data-f="${f}" value="${esc(type === 'time' ? String(P[f]).slice(0, 5) : P[f])}" ${type === 'number' ? 'step="any" inputmode="decimal"' : ''} ${extra}></div>`;
   const cell = (t, row, f, type = 'text', extra = '') => type === 'checkbox'
@@ -175,32 +178,43 @@ function vImp() {
     ${cell('pizze', p, 'attiva', 'checkbox')}${del('pizze', p)}</tr>`; }).join('');
   const base = location.href.replace(/gestione\.html.*$/, '');
   const linkCliente = `${base}?p=${encodeURIComponent(P.slug)}`, linkTotem = `${linkCliente}&totem=1`;
-  return `<h1 class="page-h">Impostazioni</h1>
-    <p class="muted" style="margin:0;max-width:65ch">Ogni modifica si salva appena lasci il campo e vale subito per i nuovi ordini. Gli ordini già in coda mantengono il loro orario.</p>
-    <section class="set-sec"><h2 class="sec-h" style="margin-top:0">Link da condividere</h2>
+  const sezioni = {
+    generale: () => `<section class="set-sec"><h2 class="sec-h">Dati della pizzeria</h2>
+      <div class="grid-gen">${gen('nome', 'Nome pizzeria')}${gen('apertura', 'Apertura', 'time')}${gen('chiusura', 'Chiusura', 'time')}</div></section>
+      <section class="set-sec"><h2 class="sec-h">Link da condividere</h2>
+      <p class="muted">Il primo va sui social, su Google e sui volantini. Il secondo si apre sul totem nel locale.</p>
       <div class="links"><div class="field"><span class="label">Ordini online</span><code class="sel">${esc(linkCliente)}</code></div>
-      <div class="field"><span class="label">Totem nel locale</span><code class="sel">${esc(linkTotem)}</code></div></div></section>
-    <section class="set-sec"><h2 class="sec-h">Pizzeria e forno</h2>
-      <div class="grid-gen">${gen('nome', 'Nome pizzeria')}${gen('apertura', 'Apertura', 'time')}${gen('chiusura', 'Chiusura', 'time')}
-      ${gen('capacita_forno', 'Posti nel forno', 'number', 'min="1"')}${gen('margine_minuti', 'Margine di sicurezza (min)', 'number', 'min="0"')}
-      ${gen('prezzo_base_pers', 'Prezzo base pizza personalizzata (€)', 'number')}${gen('descrizione_base', 'Base sempre inclusa')}</div></section>
-    ${vPagamenti()}
-    ${vFedelta()}
-    <section class="set-sec"><h2 class="sec-h">Formati</h2>
-      <p class="muted">Il tempo è quello medio dalla stesura all'uscita dal forno. I posti dicono quanto spazio occupa nel forno: con 6 posti entrano 6 normali oppure 3 famiglia. Il moltiplicatore si applica al prezzo degli ingredienti aggiunti.</p>
+      <div class="field"><span class="label">Totem nel locale</span><code class="sel">${esc(linkTotem)}</code></div></div></section>`,
+    forno: () => `<section class="set-sec"><h2 class="sec-h">Forno</h2>
+      <p class="muted">Servono a calcolare l'orario di ritiro. Il margine si aggiunge a ogni ordine per stare larghi.</p>
+      <div class="grid-gen">${gen('capacita_forno', 'Posti nel forno', 'number', 'min="1"')}${gen('margine_minuti', 'Margine di sicurezza (min)', 'number', 'min="0"')}</div></section>
+      <section class="set-sec"><h2 class="sec-h">Formati</h2>
+      <p class="muted">Il tempo è quello medio dalla stesura all'uscita dal forno. I posti dicono quanto spazio occupa nel forno: con 6 posti entrano 6 normali oppure 3 famiglia. Il supplemento si aggiunge al prezzo di listino; il moltiplicatore si applica al prezzo degli ingredienti aggiunti.</p>
       <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Minuti</th><th>Posti</th><th>Supplemento €</th><th>× aggiunte</th><th>Attivo</th><th></th></tr></thead><tbody>${formati}</tbody></table></div>
-      <button class="ghost add" data-act="add" data-t="formati">+ Aggiungi formato</button></section>
-    <section class="set-sec"><h2 class="sec-h">Impasti</h2>
-      <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Sovrapprezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${impasti}</tbody></table></div>
-      <button class="ghost add" data-act="add" data-t="impasti">+ Aggiungi impasto</button></section>
-    <section class="set-sec"><h2 class="sec-h">Ingredienti</h2>
+      <button class="ghost add" data-act="add" data-t="formati">+ Aggiungi formato</button></section>`,
+    listino: () => `<section class="set-sec"><h2 class="sec-h">Pizze del listino</h2>
+      <p class="muted">Prezzo della pizza in formato normale. Per gli altri formati si aggiunge il supplemento del formato.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Pizza</th><th>Prezzo €</th><th>Ingredienti oltre la base</th><th>In listino</th><th></th></tr></thead><tbody>${pizze}</tbody></table></div>
+      <button class="ghost add" data-act="add" data-t="pizze">+ Aggiungi pizza</button></section>
+      <section class="set-sec"><h2 class="sec-h">Pizza personalizzata</h2>
+      <p class="muted">Il cliente parte da questa base e aggiunge gli ingredienti che vuole.</p>
+      <div class="grid-gen">${gen('prezzo_base_pers', 'Prezzo base (€)', 'number')}${gen('descrizione_base', 'Base sempre inclusa')}</div></section>`,
+    ingredienti: () => `<section class="set-sec"><h2 class="sec-h">Ingredienti</h2>
       <p class="muted">Il prezzo è quello dell'aggiunta su una pizza normale. Togli la spunta quando un ingrediente finisce: sparisce dalle scelte e le pizze che lo usano risultano non disponibili.</p>
       <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Categoria</th><th>Prezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${ingr}</tbody></table></div>
       <button class="ghost add" data-act="add" data-t="ingredienti">+ Aggiungi ingrediente</button></section>
-    <section class="set-sec"><h2 class="sec-h">Listino</h2>
-      <p class="muted">Prezzo della pizza in formato normale. Per gli altri formati si aggiunge il supplemento del formato.</p>
-      <div class="tbl-wrap"><table><thead><tr><th>Pizza</th><th>Prezzo €</th><th>Ingredienti oltre la base</th><th>In listino</th><th></th></tr></thead><tbody>${pizze}</tbody></table></div>
-      <button class="ghost add" data-act="add" data-t="pizze">+ Aggiungi pizza</button></section>`;
+      <section class="set-sec"><h2 class="sec-h">Impasti</h2>
+      <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Sovrapprezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${impasti}</tbody></table></div>
+      <button class="ghost add" data-act="add" data-t="impasti">+ Aggiungi impasto</button></section>`,
+    pagamenti: vPagamenti,
+    offerte: () => vFedelta('offerte'),
+    whatsapp: () => vFedelta('messaggi'),
+  };
+  if (!sezioni[impTab]) impTab = 'generale';
+  return `<h1 class="page-h">Impostazioni</h1>
+    <p class="muted" style="margin:0;max-width:65ch">Ogni modifica si salva appena lasci il campo e vale subito per i nuovi ordini. Gli ordini già in coda mantengono il loro orario.</p>
+    <nav class="subtabs" aria-label="Sezioni delle impostazioni">${SCHEDE_IMP.map(([k, l]) => `<button class="chip" data-act="impTab" data-v="${k}" aria-current="${impTab === k}" aria-pressed="${impTab === k}">${l}</button>`).join('')}</nav>
+    ${sezioni[impTab]()}`;
 }
 
 async function aggiornaStripe() {
@@ -231,7 +245,7 @@ function vPagamenti() {
 }
 
 /* ---------- fedeltà ---------- */
-function vFedelta() {
+function vFedelta(parte) {
   const f = P.fedelta;
   const sw = (k, titolo, desc, extra = '') => `<div class="offer ${f[k]?.attivo ? 'is-on' : ''}">
     <label class="check"><input type="checkbox" id="fed-${k}" data-fed="${k}.attivo" ${f[k]?.attivo ? 'checked' : ''}><span><b>${titolo}</b><br><span class="muted" style="font-size:13px">${desc}</span></span></label>
@@ -252,6 +266,11 @@ function vFedelta() {
     <td><input type="number" data-null data-t="codici_sconto" data-id="${c.id}" data-f="usi_max" value="${esc(c.usi_max ?? '')}" placeholder="∞" aria-label="usi massimi"> <span class="muted mono" style="font-size:12px">${c.usi} usati</span></td>
     <td class="c"><input type="checkbox" data-t="codici_sconto" data-id="${c.id}" data-f="attivo" ${c.attivo ? 'checked' : ''} aria-label="attivo"></td>
     <td class="c"><button class="del ${conferma === c.id ? 'sure' : ''}" data-act="del" data-t="codici_sconto" data-id="${c.id}" aria-label="Elimina">${conferma === c.id ? 'Elimina?' : '×'}</button></td></tr>`).join('');
+  if (parte === 'messaggi') return `<section class="set-sec"><h2 class="sec-h">Messaggi WhatsApp</h2>
+    <p class="muted">Testi già pronti per i pulsanti WhatsApp della pagina Clienti. Puoi usare {nome}, {pizzeria} e {link}.</p>
+    <div class="msgs">
+      ${[['offerta', 'Offerta o novità'], ['cimanchi', 'Ci manchi']].map(([k, l]) => `<div class="field"><label class="label" for="msg-${k}">${l}</label><textarea id="msg-${k}" rows="4" data-fed="messaggi.${k}">${esc(f.messaggi?.[k] || '')}</textarea></div>`).join('')}
+    </div></section>`;
   return `<section class="set-sec"><h2 class="sec-h">Fedeltà e offerte</h2>
     <p class="muted">Attiva le offerte che vuoi. Se un ordine ha diritto a più sconti si applica il più conveniente; la pizza omaggio della tessera e il credito amico si sommano. I clienti si riconoscono dal numero di telefono.</p>
     <div class="offers">
@@ -266,11 +285,7 @@ function vFedelta() {
     ${f.codici?.attivo ? `<h3 class="sub-h">Codici sconto</h3>
       <div class="tbl-wrap"><table><thead><tr><th>Codice</th><th>Tipo</th><th>Valore</th><th>Ordine minimo €</th><th>Scadenza</th><th>Usi massimi</th><th>Attivo</th><th></th></tr></thead><tbody>${cod || '<tr><td colspan="8" class="muted">Nessun codice.</td></tr>'}</tbody></table></div>
       <button class="ghost add" data-act="add" data-t="codici_sconto">+ Nuovo codice</button>` : ''}
-    <h3 class="sub-h">Messaggi WhatsApp</h3>
-    <p class="muted">Testi già pronti per i pulsanti WhatsApp della pagina Clienti. Puoi usare {nome}, {pizzeria} e {link}.</p>
-    <div class="msgs">
-      ${[['offerta', 'Offerta o novità'], ['cimanchi', 'Ci manchi']].map(([k, l]) => `<div class="field"><label class="label" for="msg-${k}">${l}</label><textarea id="msg-${k}" rows="3" data-fed="messaggi.${k}">${esc(f.messaggi?.[k] || '')}</textarea></div>`).join('')}
-    </div></section>`;
+    </section>`;
 }
 
 /* ---------- clienti ---------- */
@@ -353,6 +368,7 @@ const ACT = {
   },
   view: async d => { view = d.v; conferma = null; if (d.v === 'clienti') await caricaClienti(); render(); scrollTo(0, 0); },
   filtro: d => { filtroCli = d.v; render(); },
+  impTab: d => { impTab = d.v; lsSet('pz_imp_tab', impTab); conferma = null; render(); scrollTo(0, 0); },
   abilita: async d => {
     const { data, error } = await sb.rpc('abilita_telefoni', { p_cliente: d.id });
     if (error) return toast(msgErr(error), true);
