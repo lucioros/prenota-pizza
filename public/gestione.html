@@ -11,7 +11,7 @@
 <body>
 <header>
   <div class="wrap">
-    <div class="brand"><span class="label">Area pizzeria</span><b id="brand">Prenota la Pizza</b></div>
+    <div class="brand"><span class="brand-logo" id="logo" aria-hidden="true"></span><div class="brand-txt"><span class="label">Area pizzeria</span><b id="brand">Prenota la Pizza</b></div></div>
     <nav class="tabs" id="tabs"></nav>
   </div>
 </header>
@@ -20,6 +20,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="common.js"></script>
+<script src="pizza-art.js"></script>
 <script>
 let utente = null, P = null, view = 'coda', ordini = [], ritiratiOggi = 0, conferma = null, canale = null;
 let D = { formati: [], impasti: [], ingredienti: [], pizze: [], pi: [], stripe: null };
@@ -184,10 +185,11 @@ function vImp() {
     ${+f.posti > cap ? `<tr><td colspan="8" class="warn-line">Questo formato occupa più posti di quanti ne abbia il forno.</td></tr>` : ''}`).join('');
   const impasti = D.impasti.map(m => `<tr>${cell('impasti', m, 'nome')}${cell('impasti', m, 'sovrapprezzo', 'number')}${cell('impasti', m, 'disponibile', 'checkbox')}${del('impasti', m)}</tr>`).join('');
   const cats = [...new Set([...CATS, ...D.ingredienti.map(g => g.categoria)])];
-  const ingr = D.ingredienti.map(g => `<tr>${cell('ingredienti', g, 'nome')}<td><select id="ingredienti-${g.id}-categoria" data-t="ingredienti" data-id="${g.id}" data-f="categoria" aria-label="categoria">${cats.map(c => `<option ${c === g.categoria ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></td>${cell('ingredienti', g, 'prezzo', 'number')}${cell('ingredienti', g, 'disponibile', 'checkbox')}${del('ingredienti', g)}</tr>`).join('');
-  const pizze = D.pizze.map(p => { const ii = ingrDi(p.id); return `<tr>${cell('pizze', p, 'nome')}${cell('pizze', p, 'prezzo', 'number')}
+  const ingr = D.ingredienti.map(g => `<tr><td><select class="ic-sel" data-null data-t="ingredienti" data-id="${g.id}" data-f="icona" aria-label="icona di ${esc(g.nome)}">
+      <option value="" ${g.icona ? '' : 'selected'}>${aspetto({ ...g, icona: null }).e} auto</option>${ICONE_SCELTA.map(e => `<option ${g.icona === e ? 'selected' : ''}>${e}</option>`).join('')}</select></td>${cell('ingredienti', g, 'nome')}<td><select id="ingredienti-${g.id}-categoria" data-t="ingredienti" data-id="${g.id}" data-f="categoria" aria-label="categoria">${cats.map(c => `<option ${c === g.categoria ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></td>${cell('ingredienti', g, 'prezzo', 'number')}${cell('ingredienti', g, 'disponibile', 'checkbox')}${del('ingredienti', g)}</tr>`).join('');
+  const pizze = D.pizze.map(p => { const ii = ingrDi(p.id); return `<tr><td style="width:56px"><span class="pz-mini">${pizzaSVG(ii.map(id => D.ingredienti.find(g => g.id === id)), { seme: p.id, rossa: /pomodoro/i.test(P.descrizione_base || ''), titolo: p.nome })}</span></td>${cell('pizze', p, 'nome')}${cell('pizze', p, 'prezzo', 'number')}
     <td style="min-width:240px"><span class="pi-list" style="font-size:13px">${ii.map(id => esc(nomeIngr(id))).join(', ') || '<span class="muted">Solo base</span>'}</span>
-      <details><summary>Modifica ingredienti</summary><div class="chips">${D.ingredienti.map(g => `<button class="chip" data-act="pizIngr" data-p="${p.id}" data-g="${g.id}" aria-pressed="${ii.includes(g.id)}">${esc(g.nome)}</button>`).join('')}</div></details></td>
+      <details><summary>Modifica ingredienti</summary><div class="chips">${D.ingredienti.map(g => `<button class="chip" data-act="pizIngr" data-p="${p.id}" data-g="${g.id}" aria-pressed="${ii.includes(g.id)}"><span class="ic" aria-hidden="true">${icona(g)}</span>${esc(g.nome)}</button>`).join('')}</div></details></td>
     ${cell('pizze', p, 'attiva', 'checkbox')}${del('pizze', p)}</tr>`; }).join('');
   const base = location.href.replace(/gestione\.html.*$/, '');
   const linkCliente = `${base}?p=${encodeURIComponent(P.slug)}`, linkTotem = `${linkCliente}&totem=1`;
@@ -215,14 +217,14 @@ function vImp() {
       <button class="ghost add" data-act="add" data-t="formati">+ Aggiungi formato</button></section>`,
     listino: () => `<section class="set-sec"><h2 class="sec-h">Pizze del listino</h2>
       <p class="muted">Prezzo della pizza in formato normale. Per gli altri formati si aggiunge il supplemento del formato.</p>
-      <div class="tbl-wrap"><table><thead><tr><th>Pizza</th><th>Prezzo €</th><th>Ingredienti oltre la base</th><th>In listino</th><th></th></tr></thead><tbody>${pizze}</tbody></table></div>
+      <div class="tbl-wrap"><table><thead><tr><th></th><th>Pizza</th><th>Prezzo €</th><th>Ingredienti oltre la base</th><th>In listino</th><th></th></tr></thead><tbody>${pizze}</tbody></table></div>
       <button class="ghost add" data-act="add" data-t="pizze">+ Aggiungi pizza</button></section>
       <section class="set-sec"><h2 class="sec-h">Pizza personalizzata</h2>
       <p class="muted">Il cliente parte da questa base e aggiunge gli ingredienti che vuole.</p>
       <div class="grid-gen">${gen('prezzo_base_pers', 'Prezzo base (€)', 'number')}${gen('descrizione_base', 'Base sempre inclusa')}</div></section>`,
     ingredienti: () => `<section class="set-sec"><h2 class="sec-h">Ingredienti</h2>
       <p class="muted">Il prezzo è quello dell'aggiunta su una pizza normale. Togli la spunta quando un ingrediente finisce: sparisce dalle scelte e le pizze che lo usano risultano non disponibili.</p>
-      <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Categoria</th><th>Prezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${ingr}</tbody></table></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Icona</th><th>Nome</th><th>Categoria</th><th>Prezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${ingr}</tbody></table></div>
       <button class="ghost add" data-act="add" data-t="ingredienti">+ Aggiungi ingrediente</button></section>
       <section class="set-sec"><h2 class="sec-h">Impasti</h2>
       <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Sovrapprezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${impasti}</tbody></table></div>
@@ -354,6 +356,7 @@ function vClienti() {
 function render() {
   const t = (id, l) => `<button class="tab" data-act="view" data-v="${id}" aria-current="${view === id}">${l}</button>`;
   $('#brand').textContent = P ? P.nome : 'Prenota la Pizza';
+  $('#logo').innerHTML = pizzaSVG([{ nome: 'Basilico' }], { seme: 'logo' });
   $('#tabs').innerHTML = utente ? (P ? t('coda', 'Coda forno') + t('clienti', 'Clienti') + t('imp', 'Impostazioni') + `<a class="tab" href="./?p=${encodeURIComponent(P.slug)}" target="_blank" rel="noopener">Pagina ordini</a>` : '')
     + `<button class="tab totem-btn" data-act="esci">Esci</button>` : '';
   if (!utente) { $('#main').innerHTML = vLogin(); $('#auth-form').addEventListener('submit', inviaAuth); return; }
@@ -470,6 +473,8 @@ const ACT = {
     D.pi = has ? D.pi.filter(x => !(x.pizza_id === d.p && x.ingrediente_id === d.g)) : [...D.pi, { pizza_id: d.p, ingrediente_id: d.g }];
     el.setAttribute('aria-pressed', !has);
     el.closest('td').querySelector('.pi-list').innerHTML = ingrDi(d.p).map(id => esc(nomeIngr(id))).join(', ') || '<span class="muted">Solo base</span>';
+    const mini = el.closest('tr').querySelector('.pz-mini');
+    if (mini) mini.innerHTML = pizzaSVG(ingrDi(d.p).map(id => D.ingredienti.find(g => g.id === id)), { seme: d.p, rossa: /pomodoro/i.test(P.descrizione_base || '') });
   },
 };
 document.addEventListener('click', e => {

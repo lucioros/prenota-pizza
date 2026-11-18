@@ -11,7 +11,7 @@
 <body>
 <header>
   <div class="wrap">
-    <div class="brand"><span class="label">Ordina da asporto</span><b id="brand">…</b></div>
+    <div class="brand"><span class="brand-logo" id="logo" aria-hidden="true"></span><div class="brand-txt"><span class="label">Ordina da asporto</span><b id="brand">…</b></div></div>
     <nav class="tabs" id="tabs"></nav>
   </div>
 </header>
@@ -21,6 +21,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="common.js"></script>
+<script src="pizza-art.js"></script>
 <script>
 const TOTEM = params.get('totem') === '1';
 let P = null, formati = [], impasti = [], ingr = [], pizze = [];
@@ -44,6 +45,8 @@ function perExtra() {
   if (fid.consensoToccato) x.consenso = fid.consenso;
   return x;
 }
+const rossa = () => /pomodoro/i.test(P.descrizione_base || '');
+const tag = g => g ? `<span class="ing-tag"><span class="ic" aria-hidden="true">${icona(g)}</span> ${esc(g.nome.toLowerCase())}</span>` : '';
 const F = id => formati.find(f => f.id === id) || formati[0];
 const IM = id => impasti.find(i => i.id === id);
 const G = id => ingr.find(g => g.id === id);
@@ -60,6 +63,8 @@ function prezzo(r) {
 }
 const nomeRiga = r => r.tipo === 'pers' ? 'Pizza personalizzata' : (PZ(r.pizza)?.nome || 'Pizza');
 const totale = rows => r2(rows.reduce((a, r) => a + prezzo(r) * r.qta, 0));
+// ingredienti effettivi di una riga: quelli della pizza, meno i tolti, più le aggiunte
+const ingrRiga = r => [...(r.tipo === 'listino' ? (PZ(r.pizza)?.ingr || []).filter(id => !r.tolti.includes(id)) : []), ...r.aggiunte].map(G).filter(Boolean);
 const perRpc = rows => rows.map(r => ({ tipo: r.tipo, pizza_id: r.pizza, formato_id: r.formato, impasto_id: r.impasto, qta: r.qta, aggiunte: r.aggiunte, tolti: r.tolti }));
 
 async function carica() {
@@ -86,6 +91,7 @@ function render() {
   document.body.classList.toggle('totem', TOTEM);
   document.title = P.nome;
   $('#brand').textContent = P.nome;
+  $('#logo').innerHTML = pizzaSVG([{ nome: 'Basilico' }], { seme: 'logo' });
   $('#tabs').innerHTML = TOTEM ? '' : `<a class="tab" href="gestione.html?p=${encodeURIComponent(SLUG)}">Area pizzeria</a>`;
   $('#main').innerHTML = vOrdina();
   renderModal();
@@ -96,8 +102,9 @@ function vOrdina() {
   const lista = pizze.map(p => {
     const manca = p.ingr.some(id => !G(id)?.disponibile);
     return `<button class="pz" data-act="apri" data-tipo="listino" data-p="${p.id}" ${manca ? 'disabled' : ''}>
+      ${pizzaSVG(p.ingr.map(G), { seme: p.id, rossa: rossa(), titolo: p.nome })}
       <h3>${esc(p.nome)}</h3>
-      <span class="ing">${esc(P.descrizione_base)}${p.ingr.length ? ', ' : ''}${p.ingr.map(id => esc(G(id)?.nome || '')).join(', ').toLowerCase()}</span>
+      <span class="ing">${p.ingr.length ? p.ingr.map(id => tag(G(id))).join('') : `<span class="muted">${esc(P.descrizione_base)}</span>`}</span>
       <span class="row">${manca ? '<span class="badge">Non disponibile oggi</span>' : `<span class="price">${eur(p.prezzo)}</span>`}
       ${!manca && fam ? `<span class="muted mono" style="font-size:12px">${esc(fam.nome)} ${eur(+p.prezzo + +fam.supplemento)}</span>` : ''}</span>
     </button>`;
@@ -105,11 +112,13 @@ function vOrdina() {
   const sv = servizio(P);
   return `<div class="order-grid">
     <section style="min-width:0">
+      <div class="hero"><div>
       <h1 class="page-h">${sv.aperto ? 'Cosa vi prepariamo?' : 'Ordina ora, ritira quando apriamo'}</h1>
       <p class="muted" style="margin:0">${sv.aperto ? 'Scegli dal listino o componi la tua pizza. Ti diciamo subito a che ora passare a ritirarla.' : `Apriamo alle ${ora(sv.start)}${giorno(sv.start) ? ' di ' + esc(giorno(sv.start)) : ''}. Puoi già ordinare.`}</p>
+      </div>${pizze.length ? pizzaSVG(pizze[0].ingr.map(G), { seme: 'hero' + pizze[0].id, rossa: rossa(), titolo: pizze[0].nome }) : ''}</div>
       ${vOfferte()}
       <button class="create" data-act="apri" data-tipo="pers">
-        <span class="plus">+</span>
+        ${pizzaSVG([], { seme: 'base', rossa: rossa(), titolo: 'Pizza da comporre' })}
         <span><h3>Crea la tua pizza</h3><span class="muted">${esc(P.descrizione_base)}, poi scegli impasto e ingredienti · da <span class="mono">${eur(P.prezzo_base_pers)}</span></span></span>
       </button>
       <h2 class="sec-h">Il listino</h2>
@@ -149,7 +158,8 @@ function vCarrello() {
       r.aggiunte.length ? '+ ' + r.aggiunte.map(id => G(id)?.nome).join(', ').toLowerCase() : '',
       r.tolti.length ? 'senza ' + r.tolti.map(id => G(id)?.nome).join(', ').toLowerCase() : ''].filter(Boolean).join(' · ');
     return `<li class="line"><span class="t">${r.qta}× ${esc(nomeRiga(r))}</span><span class="p">${eur(prezzo(r) * r.qta)}</span>
-      <span class="d">${esc(det)}</span><button class="x" data-act="togli" data-i="${i}">Togli</button></li>`;
+      <span class="d">${esc(det)}</span><button class="x" data-act="togli" data-i="${i}">Togli</button>
+      ${ingrRiga(r).length ? `<span class="ics" aria-hidden="true">${ingrRiga(r).map(icona).join(' ')}</span>` : ''}</li>`;
   }).join('');
   return `<h2>Il tuo ordine</h2>
     ${cart.length ? `<ul class="lines">${righe}</ul><div class="tot"><span>Totale</span><span class="mono">${eur(totale(cart))}</span></div>`
@@ -297,15 +307,15 @@ function renderModal() {
   const fOpt = formati.map(f => `<button class="opt" data-act="b" data-k="formato" data-v="${f.id}" aria-pressed="${B.formato === f.id}">${esc(f.nome)}<small>${eur(prezzo({ ...B, formato: f.id }))} · ~${Math.round(+f.preparazione + +f.minuti)} min</small></button>`).join('');
   const iOpt = impasti.filter(i => i.disponibile).map(i => `<button class="opt" data-act="b" data-k="impasto" data-v="${i.id}" aria-pressed="${B.impasto === i.id}">${esc(i.nome)}<small>${+i.sovrapprezzo ? '+ ' + eur(i.sovrapprezzo) : 'incluso'}</small></button>`).join('');
   const f = F(B.formato), base = pz ? pz.ingr : [];
-  const inclusi = base.map(id => `<button class="chip ${B.tolti.includes(id) ? 'off' : ''}" data-act="tolto" data-g="${id}">${esc(G(id)?.nome)}</button>`).join('');
+  const inclusi = base.map(id => `<button class="chip ${B.tolti.includes(id) ? 'off' : ''}" data-act="tolto" data-g="${id}"><span class="ic" aria-hidden="true">${icona(G(id))}</span>${esc(G(id)?.nome)}</button>`).join('');
   const cats = [...new Set([...CATS, ...ingr.map(g => g.categoria)])];
   const gruppi = cats.map(c => {
     const gs = ingr.filter(g => g.categoria === c && !base.includes(g.id));
     if (!gs.length) return '';
-    return `<div class="grp"><span class="label">${esc(c)}</span><div class="chips">${gs.map(g => `<button class="chip" data-act="agg" data-g="${g.id}" aria-pressed="${B.aggiunte.includes(g.id)}" ${g.disponibile ? '' : 'disabled'}>${esc(g.nome)}<small>${g.disponibile ? '+' + eur(g.prezzo * f.moltiplicatore_aggiunte) : 'finito'}</small></button>`).join('')}</div></div>`;
+    return `<div class="grp"><span class="label">${esc(c)}</span><div class="chips">${gs.map(g => `<button class="chip" data-act="agg" data-g="${g.id}" aria-pressed="${B.aggiunte.includes(g.id)}" ${g.disponibile ? '' : 'disabled'}><span class="ic" aria-hidden="true">${icona(g)}</span>${esc(g.nome)}<small>${g.disponibile ? '+' + eur(g.prezzo * f.moltiplicatore_aggiunte) : 'finito'}</small></button>`).join('')}</div></div>`;
   }).join('');
   m.innerHTML = `<div class="overlay" data-act="fuori"><div class="sheet" role="dialog" aria-label="Componi la pizza">
-    <div class="sheet-h"><div><span class="label">${pz ? 'Dal listino' : 'Crea la tua pizza'}</span><h2>${esc(pz ? pz.nome : 'La tua pizza')}</h2>
+    <div class="sheet-h"><span class="anteprima" id="anteprima">${pizzaSVG(ingrRiga(B), { seme: pz ? pz.id : 'pers', rossa: rossa(), titolo: 'Anteprima' })}</span><div class="tit"><span class="label">${pz ? 'Dal listino' : 'Crea la tua pizza'}</span><h2>${esc(pz ? pz.nome : 'La tua pizza')}</h2>
       <span class="muted">${esc(P.descrizione_base)}${pz && pz.ingr.length ? ', ' + pz.ingr.map(id => esc(G(id)?.nome)).join(', ').toLowerCase() : ''}</span></div>
       <button class="close" data-act="chiudi" aria-label="Chiudi">×</button></div>
     <div class="sheet-b">
