@@ -33,12 +33,14 @@ let stimaRes = null, stimaSeq = 0, ultimo = TOTEM ? null : lsGet('pz_ultimo_' + 
 // come paga il cliente: al totem sempre alla cassa, senza Stripe attivo solo al ritiro
 const modoPag = () => (TOTEM || !P.pagamenti_attivi) ? 'no' : P.pagamento_online;
 const pagaOnline = () => modoPag() === 'obbligatorio' || (modoPag() === 'facoltativo' && pagScelta === 'online');
+// chiave segreta di questo telefono: dà accesso ai dati completi della tessera
+const DEV = (() => { let t = lsGet('pz_dev'); if (!t || String(t).length < 32) { t = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join(''); lsSet('pz_dev', t); } return t; })();
 const FED = () => P.fedelta || {};
 const on = k => !!(FED()[k] && FED()[k].attivo);
 const fedeltaAttiva = () => ['timbri', 'amico', 'cimanchi'].some(on);
 const telValido = t => String(t || '').replace(/\D/g, '').length >= 8;
 function perExtra() {
-  const x = { salva: fid.salva, codice: fid.codice || null, codice_amico: fid.amico || null, usa_premio: fid.usaPremio };
+  const x = { dispositivo: DEV, salva: fid.salva, codice: fid.codice || null, codice_amico: fid.amico || null, usa_premio: fid.usaPremio };
   if (fid.consensoToccato) x.consenso = fid.consenso;
   return x;
 }
@@ -172,6 +174,12 @@ function vFid() {
   if (!scheda || schedaTel !== cliente.tel) return '<span class="muted" style="font-size:13px">Cerco la tua scheda…</span>';
   const f = FED();
   const consenso = `<label class="check"><input type="checkbox" id="c-consenso" data-chk="consenso" ${fid.consenso ? 'checked' : ''}> Voglio ricevere offerte e novità su WhatsApp</label>`;
+  if (scheda.trovato && !scheda.fiducia) {
+    return `<div class="fid">
+      <div class="top"><b>Numero riconosciuto</b>${on('timbri') ? `<span class="mono">${scheda.timbri}/${scheda.soglia} timbri</span>` : ''}</div>
+      <span class="muted" style="font-size:13px">Per proteggere i tuoi dati, nome, premi e "la mia solita" si vedono solo dal telefono con cui ti sei registrato. I timbri di questo ordine si sommano comunque. Questo telefono si abilita da solo quando ritiri l'ordine in pizzeria.</span>
+    </div>`;
+  }
   if (scheda.trovato) {
     const tot = scheda.soglia, n = Math.min(scheda.timbri, tot);
     const puo = on('timbri') && scheda.timbri >= tot;
@@ -196,7 +204,7 @@ function cercaScheda() {
   if (!fedeltaAttiva() || !telValido(cliente.tel)) { scheda = null; const el = $('#fid-info'); if (el) el.innerHTML = vFid(); return; }
   schedaTimer = setTimeout(async () => {
     const tel = cliente.tel;
-    const { data } = await sb.rpc('scheda_cliente', { p_pizzeria: P.id, p_telefono: tel });
+    const { data } = await sb.rpc('scheda_fedelta', { p_pizzeria: P.id, p_telefono: tel, p_dispositivo: DEV });
     if (tel !== cliente.tel) return;
     scheda = data || { trovato: false }; schedaTel = tel; fid.usaPremio = false;
     const el = $('#fid-info'); if (el) el.innerHTML = vFid();

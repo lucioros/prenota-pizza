@@ -297,7 +297,7 @@ function vClienti() {
     <td>${c.ultimo ? new Date(c.ultimo).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }) : '—'}${assente(c) ? ' <span class="pill preparazione">assente</span>' : ''}</td>
     <td class="mono">${f.timbri?.attivo ? c.timbri + '/' + f.timbri.soglia : '—'}</td>
     <td>${c.consenso ? '<span class="pill pronto">Sì</span>' : '<span class="pill">No</span>'}</td>
-    <td class="acts-cell">${c.consenso ? `<a class="wa" href="${esc(waLink(c, tipoMsg))}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
+    <td class="acts-cell">${c.telefoni_attesa ? `<button class="ghost small" data-act="abilita" data-id="${c.id}" title="Il cliente ha ordinato da un telefono nuovo">Abilita telefono</button> ` : ''}${c.consenso ? `<a class="wa" href="${esc(waLink(c, tipoMsg))}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
       <button class="del ${conferma === c.id ? 'sure' : ''}" data-act="delCli" data-id="${c.id}" aria-label="Cancella cliente">${conferma === c.id ? 'Cancella?' : '×'}</button></td></tr>`).join('');
   const tot = clienti.length, cons = clienti.filter(c => c.consenso).length;
   const top = f.pizza_cliente?.attivo ? `<section class="set-sec"><h2 class="sec-h">Le pizze dei clienti</h2>
@@ -353,6 +353,12 @@ const ACT = {
   },
   view: async d => { view = d.v; conferma = null; if (d.v === 'clienti') await caricaClienti(); render(); scrollTo(0, 0); },
   filtro: d => { filtroCli = d.v; render(); },
+  abilita: async d => {
+    const { data, error } = await sb.rpc('abilita_telefoni', { p_cliente: d.id });
+    if (error) return toast(msgErr(error), true);
+    const c = clienti.find(x => x.id === d.id); if (c) c.telefoni_attesa = 0;
+    render(); toast(data ? 'Telefono abilitato: il cliente ora vede la sua tessera' : 'Nessun telefono in attesa');
+  },
   delCli: async d => {
     if (conferma !== d.id) { conferma = d.id; return render(); }
     conferma = null;

@@ -230,3 +230,4 @@ a.ghost{text-decoration:none;color:inherit;display:inline-block}
 .acts-cell{white-space:nowrap}
 .wa{display:inline-block;background:#1f9d55;color:#fff;text-decoration:none;border-radius:6px;padding:5px 10px;font-size:13px;font-weight:600}
 .sconti-t{display:flex;flex-direction:column;font-size:12px;color:var(--accent)}
+.ghost.small{padding:4px 8px;font-size:12px}
