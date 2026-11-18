@@ -10,7 +10,7 @@ Deno.serve(async (req) => {
     if (typeof ordine_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(ordine_id)) return json({ error: 'Ordine non valido' }, 400);
 
     const { data: o, error } = await admin.from('ordini')
-      .select('id, numero, stato, pagamento, totale, creato_il, nome_cliente, pizzeria_id, righe_ordine(nome, formato_nome, impasto_nome, aggiunte, tolti, quantita, prezzo_unitario), pizzerie(slug, nome)')
+      .select('id, numero, stato, pagamento, totale, sconti, creato_il, nome_cliente, pizzeria_id, righe_ordine(nome, formato_nome, impasto_nome, aggiunte, tolti, quantita, prezzo_unitario), pizzerie(slug, nome)')
       .eq('id', ordine_id).maybeSingle();
     if (error) throw error;
     if (!o) return json({ error: 'Ordine non trovato' }, 404);
@@ -22,18 +22,14 @@ Deno.serve(async (req) => {
 
     const pz = o.pizzerie as unknown as { slug: string; nome: string };
     const torna = (esito: string) => `${SITE_URL}/?p=${encodeURIComponent(pz.slug)}&pagamento=${esito}&ordine=${o.id}`;
-    const line_items: Record<string, unknown> = {};
+    // Una sola voce con il totale già scontato; il dettaglio delle pizze va nella descrizione
     // deno-lint-ignore no-explicit-any
-    (o.righe_ordine as any[]).forEach((r, i) => {
-      const det = [r.impasto_nome && r.impasto_nome !== 'Classico' ? `impasto ${r.impasto_nome}` : '',
-        r.aggiunte?.length ? '+ ' + r.aggiunte.map((x: { nome: string }) => x.nome).join(', ') : '',
-        r.tolti?.length ? 'senza ' + r.tolti.map((x: { nome: string }) => x.nome).join(', ') : ''].filter(Boolean).join(' · ');
-      line_items[i] = {
-        quantity: r.quantita,
-        price_data: { currency: 'eur', unit_amount: Math.round(Number(r.prezzo_unitario) * 100),
-          product_data: { name: `${r.nome} (${r.formato_nome})`, ...(det ? { description: det.slice(0, 300) } : {}) } },
-      };
-    });
+    const elenco = (o.righe_ordine as any[]).map((r) => `${r.quantita}× ${r.nome} (${r.formato_nome})`).join(', ');
+    // deno-lint-ignore no-explicit-any
+    const sconti = ((o as any).sconti || []).map((s: { descrizione: string }) => s.descrizione).join(', ');
+    const line_items = { 0: { quantity: 1, price_data: { currency: 'eur', unit_amount: Math.round(Number(o.totale) * 100),
+      product_data: { name: `Ordine #${o.numero} - ${pz.nome}`, description: (elenco + (sconti ? ` · Sconti: ${sconti}` : '')).slice(0, 500) } } } };
+    if (Math.round(Number(o.totale) * 100) < 50) return json({ error: 'Importo troppo basso per il pagamento online: paga al ritiro' }, 409);
 
     // Commissione facoltativa per chi gestisce la piattaforma (percentuale, es. 2 = 2%)
     const perc = Number(Deno.env.get('COMMISSIONE_PERCENTO') || 0);

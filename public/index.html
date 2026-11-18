@@ -26,11 +26,22 @@ const TOTEM = params.get('totem') === '1';
 let P = null, formati = [], impasti = [], ingr = [], pizze = [];
 let cart = [], B = null, done = null, cliente = { nome: '', tel: '', quando: '' }, errore = '', inviando = false;
 let pagScelta = 'online', ritorno = null;
+// fedeltà: scheda del cliente trovata dal telefono e scelte fatte nel carrello
+let scheda = null, schedaTel = '', fid = { salva: true, consenso: false, consensoToccato: false, compleanno: '', codice: '', amico: params.get('invito') || '', usaPremio: false };
 let stimaRes = null, stimaSeq = 0, ultimo = TOTEM ? null : lsGet('pz_ultimo_' + SLUG), statoUltimo = null;
 
 // come paga il cliente: al totem sempre alla cassa, senza Stripe attivo solo al ritiro
 const modoPag = () => (TOTEM || !P.pagamenti_attivi) ? 'no' : P.pagamento_online;
 const pagaOnline = () => modoPag() === 'obbligatorio' || (modoPag() === 'facoltativo' && pagScelta === 'online');
+const FED = () => P.fedelta || {};
+const on = k => !!(FED()[k] && FED()[k].attivo);
+const fedeltaAttiva = () => ['timbri', 'compleanno', 'amico', 'cimanchi'].some(on);
+const telValido = t => String(t || '').replace(/\D/g, '').length >= 8;
+function perExtra() {
+  const x = { salva: fid.salva, compleanno: fid.compleanno || null, codice: fid.codice || null, codice_amico: fid.amico || null, usa_premio: fid.usaPremio };
+  if (fid.consensoToccato) x.consenso = fid.consenso;
+  return x;
+}
 const F = id => formati.find(f => f.id === id) || formati[0];
 const IM = id => impasti.find(i => i.id === id);
 const G = id => ingr.find(g => g.id === id);
@@ -94,6 +105,7 @@ function vOrdina() {
     <section style="min-width:0">
       <h1 class="page-h">${sv.aperto ? 'Cosa vi prepariamo?' : 'Ordina ora, ritira quando apriamo'}</h1>
       <p class="muted" style="margin:0">${sv.aperto ? 'Scegli dal listino o componi la tua pizza. Ti diciamo subito a che ora passare a ritirarla.' : `Apriamo alle ${ora(sv.start)}${giorno(sv.start) ? ' di ' + esc(giorno(sv.start)) : ''}. Puoi già ordinare.`}</p>
+      ${vOfferte()}
       <button class="create" data-act="apri" data-tipo="pers">
         <span class="plus">+</span>
         <span><h3>Crea la tua pizza</h3><span class="muted">${esc(P.descrizione_base)}, poi scegli impasto e ingredienti · da <span class="mono">${eur(P.prezzo_base_pers)}</span></span></span>
@@ -103,6 +115,17 @@ function vOrdina() {
     </section>
     <aside class="cart"><div id="track">${vUltimo()}</div>${vCarrello()}</aside>
   </div>`;
+}
+
+function vOfferte() {
+  const f = FED(), out = [];
+  const GG = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+  if (on('fasce')) (f.fasce.fasce || []).forEach(x => out.push(`−${x.perc}% se ritiri tra le ${x.da} e le ${x.a}`));
+  if (on('timbri')) out.push(`Ogni ${f.timbri.soglia} pizze una in omaggio`);
+  if (on('giorni_doppi') && (f.giorni_doppi.giorni || []).length) out.push(`Timbri doppi il ${f.giorni_doppi.giorni.map(g => GG[g]).join(' e il ')}`);
+  if (on('amico')) out.push(`Porta un amico: ${eur(f.amico.sconto)} di sconto a lui e a te`);
+  if (on('compleanno')) out.push(`−${f.compleanno.perc}% nella settimana del compleanno`);
+  return out.length ? `<div class="offerte">${out.map(o => `<span class="offerta">${esc(o)}</span>`).join('')}</div>` : '';
 }
 
 function vUltimo() {
@@ -131,13 +154,56 @@ function vCarrello() {
     ${cart.length ? `<ul class="lines">${righe}</ul><div class="tot"><span>Totale</span><span class="mono">${eur(totale(cart))}</span></div>`
       : `<p class="muted" style="margin:0">Ancora vuoto. Tocca una pizza per aggiungerla.</p>`}
     <div class="field"><label class="label" for="c-nome">Nome per il ritiro</label><input id="c-nome" data-c="nome" value="${esc(cliente.nome)}" autocomplete="given-name" maxlength="60"></div>
-    ${TOTEM ? '' : `<div class="field"><label class="label" for="c-tel">Telefono (facoltativo)</label><input id="c-tel" data-c="tel" type="tel" value="${esc(cliente.tel)}" autocomplete="tel" maxlength="30"></div>`}
+    ${TOTEM && !fedeltaAttiva() ? '' : `<div class="field"><label class="label" for="c-tel">${fedeltaAttiva() ? 'Telefono, per timbri e offerte (facoltativo)' : 'Telefono (facoltativo)'}</label><input id="c-tel" data-c="tel" type="tel" inputmode="tel" value="${esc(cliente.tel)}" autocomplete="tel" maxlength="30" placeholder="333 123 4567"></div>`}
+    <div id="fid-info">${vFid()}</div>
+    ${on('codici') || on('amico') ? `<div class="codes">
+      ${on('codici') ? `<div class="field"><label class="label" for="c-codice">Codice sconto</label><input id="c-codice" data-f="codice" value="${esc(fid.codice)}" autocapitalize="characters" maxlength="20"></div>` : ''}
+      ${on('amico') ? `<div class="field"><label class="label" for="c-amico">Codice di un amico</label><input id="c-amico" data-f="amico" value="${esc(fid.amico)}" autocapitalize="characters" maxlength="10" placeholder="solo al primo ordine"></div>` : ''}
+    </div>` : ''}
     <div class="field"><label class="label" for="c-quando">Quando passi?</label>
       <select id="c-quando" data-c="quando"><option value="">Appena pronta</option>${opzioniOra()}</select></div>
     ${vPagamento()}
     <div id="stima">${vStima()}</div>
     ${errore ? `<span class="err-msg">${esc(errore)}</span>` : ''}
     <button class="primary" data-act="conferma" ${cart.length && !inviando ? '' : 'disabled'}>${inviando ? (pagaOnline() ? 'Ti porto al pagamento…' : 'Invio in corso…') : pagaOnline() ? 'Vai al pagamento' : 'Conferma ordine'}</button>`;
+}
+// Scheda fedeltà: cambia quando cambia il telefono
+function vFid() {
+  if (!fedeltaAttiva() || !telValido(cliente.tel)) return '';
+  if (!scheda || schedaTel !== cliente.tel) return '<span class="muted" style="font-size:13px">Cerco la tua scheda…</span>';
+  const f = FED();
+  const consenso = `<label class="check"><input type="checkbox" id="c-consenso" data-chk="consenso" ${fid.consenso ? 'checked' : ''}> Voglio ricevere offerte e novità su WhatsApp</label>`;
+  const bday = on('compleanno') && !(scheda.trovato && scheda.compleanno_impostato) ? `<div class="field"><label class="label" for="c-bday">Compleanno (facoltativo, per il tuo regalo)</label><input id="c-bday" type="date" data-f="compleanno" value="${esc(fid.compleanno)}"></div>` : '';
+  if (scheda.trovato) {
+    const tot = scheda.soglia, n = Math.min(scheda.timbri, tot);
+    const puo = on('timbri') && scheda.timbri >= tot;
+    return `<div class="fid">
+      <div class="top"><b>Ciao ${esc(scheda.nome)}!</b>${on('timbri') ? `<span class="mono">${scheda.timbri}/${tot} timbri</span>` : ''}</div>
+      ${on('timbri') ? `<div class="stamps" aria-hidden="true">${Array.from({ length: Math.min(tot, 20) }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</div>` : ''}
+      ${puo ? `<button class="chip" data-act="premio" aria-pressed="${fid.usaPremio}">${fid.usaPremio ? '✓ ' : ''}Usa la pizza omaggio</button>` : ''}
+      ${+scheda.credito > 0 ? `<span class="muted" style="font-size:13px">Hai ${eur(scheda.credito)} di credito per gli amici invitati: lo usi su questo ordine.</span>` : ''}
+      ${scheda.solita && scheda.solita.length ? `<button class="ghost" data-act="solita">Riordina la tua solita (${scheda.solita.map(r => r.qta + '× ' + esc(r.nome)).join(', ')})</button>` : ''}
+      ${!scheda.consenso ? consenso : ''}${bday}
+    </div>`;
+  }
+  return `<div class="fid">
+    <label class="check"><input type="checkbox" id="c-salva" data-chk="salva" ${fid.salva ? 'checked' : ''}> Salva il mio numero per ${on('timbri') ? 'raccogliere timbri e ' : ''}ricevere i vantaggi</label>
+    ${fid.salva ? consenso + bday : ''}
+    <span class="muted" style="font-size:12px">Usiamo il numero solo per riconoscerti e, se lo scegli, per scriverti su WhatsApp. Puoi chiedere di cancellarlo quando vuoi.</span>
+  </div>`;
+}
+let schedaTimer;
+function cercaScheda() {
+  clearTimeout(schedaTimer);
+  if (!fedeltaAttiva() || !telValido(cliente.tel)) { scheda = null; const el = $('#fid-info'); if (el) el.innerHTML = vFid(); return; }
+  schedaTimer = setTimeout(async () => {
+    const tel = cliente.tel;
+    const { data } = await sb.rpc('scheda_cliente', { p_pizzeria: P.id, p_telefono: tel });
+    if (tel !== cliente.tel) return;
+    scheda = data || { trovato: false }; schedaTel = tel; fid.usaPremio = false;
+    const el = $('#fid-info'); if (el) el.innerHTML = vFid();
+    aggiornaStima();
+  }, 400);
 }
 function vPagamento() {
   const m = modoPag();
@@ -155,7 +221,13 @@ function vStima() {
   return `<div class="stima ${e.oltre_chiusura ? 'err' : ''}"><span class="label">Ritiro previsto</span>
     <span class="ora">${ora(e.ritiro)}</span>
     <span class="muted" style="font-size:13px">${giorno(e.ritiro) ? esc(giorno(e.ritiro)) + ' · ' : ''}${e.pizze_davanti ? `${e.pizze_davanti} pizze in coda prima delle tue` : 'Il forno è libero'}</span>
-    ${e.oltre_chiusura ? '<span style="font-size:13px">Oltre l\'orario di chiusura: prova con meno pizze.</span>' : ''}</div>`;
+    ${e.oltre_chiusura ? '<span style="font-size:13px">Oltre l\'orario di chiusura: prova con meno pizze.</span>' : ''}</div>
+    ${(e.sconti && e.sconti.length) || (e.avvisi && e.avvisi.length) || e.timbri_guadagnati ? `<div class="sconti">
+      ${(e.sconti || []).map(x => `<div class="sc"><span>${esc(x.descrizione)}</span><span class="mono">−${eur(x.importo)}</span></div>`).join('')}
+      ${e.sconti && e.sconti.length ? `<div class="sc tot"><span>Da pagare</span><span class="mono"><s class="muted">${eur(e.totale_lordo)}</s> ${eur(e.totale)}</span></div>` : ''}
+      ${(e.avvisi || []).map(a => `<span class="avviso">${esc(a)}</span>`).join('')}
+      ${e.timbri_guadagnati ? `<span class="muted" style="font-size:13px">Con questo ordine guadagni ${e.timbri_guadagnati} timbri</span>` : ''}
+    </div>` : ''}`;
 }
 // L'orario lo calcola il database guardando tutti gli ordini già in coda
 let stimaTimer;
@@ -164,11 +236,12 @@ function aggiornaStima() {
   if (!cart.length) { stimaRes = null; const el = $('#stima'); if (el) el.innerHTML = vStima(); return; }
   stimaTimer = setTimeout(async () => {
     const seq = ++stimaSeq;
-    const { data, error } = await sb.rpc('stima_ritiro', { p_pizzeria: P.id, p_righe: perRpc(cart), p_preferito: cliente.quando ? new Date(+cliente.quando).toISOString() : null });
+    const { data, error } = await sb.rpc('stima_ordine', { p_pizzeria: P.id, p_righe: perRpc(cart), p_preferito: cliente.quando ? new Date(+cliente.quando).toISOString() : null,
+      p_extra: { ...perExtra(), telefono: cliente.tel || null } });
     if (seq !== stimaSeq) return;
     stimaRes = error ? { err: msgErr(error) } : data;
     const el = $('#stima'); if (el) el.innerHTML = vStima();
-  }, 250);
+  }, 400);
 }
 async function controllaUltimo() {
   if (!ultimo) return;
@@ -179,6 +252,20 @@ async function controllaUltimo() {
   const tr = $('#track'); if (tr) tr.innerHTML = vUltimo();
 }
 
+function vDoneFid() {
+  const c = done && done.cliente; if (!c) return '';
+  const f = FED(), parti = [];
+  if (on('timbri')) parti.push(`<span class="mono">${c.timbri}/${c.soglia}</span> timbri sulla tua tessera`);
+  let invito = '';
+  if (on('amico') && c.codice_invito && !TOTEM) {
+    const link = `${location.origin}${location.pathname}?p=${encodeURIComponent(SLUG)}&invito=${c.codice_invito}`;
+    const msg = `Ordina da ${P.nome} con il mio codice ${c.codice_invito}: hai ${eur(f.amico.sconto)} di sconto sul primo ordine! ${link}`;
+    invito = `<div class="invito"><span class="label">Il tuo codice amico</span><span class="mono" style="font-size:22px">${esc(c.codice_invito)}</span>
+      <span class="muted" style="font-size:13px">Chi ordina con il tuo codice ha ${eur(f.amico.sconto)} di sconto, e tu ricevi ${eur(f.amico.sconto)} di credito quando ritira.</span>
+      <a class="ghost" href="https://wa.me/?text=${encodeURIComponent(msg)}" target="_blank" rel="noopener">Invialo su WhatsApp</a></div>`;
+  }
+  return (parti.length ? `<span class="muted">${parti.join(' · ')}</span>` : '') + invito;
+}
 function renderModal() {
   const m = $('#modal');
   if (ritorno) {
@@ -195,6 +282,7 @@ function renderModal() {
       <span class="muted">Grazie${done.nome ? ' ' + esc(done.nome) : ''}, passa a ritirare alle</span>
       <span class="ora">${ora(done.ritiro)}${giorno(done.ritiro) ? ' · ' + esc(giorno(done.ritiro)) : ''}</span>
       <span class="muted">${done.pagato ? 'Pagato online' : 'Totale da pagare al ritiro'}: <span class="mono">${eur(done.totale)}</span></span>
+      ${vDoneFid()}
       ${TOTEM ? '<span class="muted" style="font-size:13px">Ricorda il numero: ti chiamiamo con questo.</span>' : '<span class="muted" style="font-size:13px">Puoi seguire lo stato del tuo ordine da questa pagina.</span>'}
       <button class="primary" data-act="nuovo" style="margin-top:8px">${TOTEM ? 'Fine' : 'Chiudi'}</button></div></div>`; return;
   }
@@ -260,6 +348,18 @@ async function gestisciRitorno() {
 }
 const ACT = {
   paga: d => { pagScelta = d.v; render(); },
+  premio: () => { fid.usaPremio = !fid.usaPremio; $('#fid-info').innerHTML = vFid(); aggiornaStima(); },
+  solita: () => {
+    const imp = impasti.find(i => i.disponibile);
+    let saltate = 0;
+    for (const r of scheda.solita) {
+      if (!formati.some(f => f.id === r.formato_id) || (r.tipo === 'listino' && !PZ(r.pizza_id))) { saltate++; continue; }
+      cart.push({ tipo: r.tipo, pizza: r.pizza_id, formato: r.formato_id, impasto: impasti.some(i => i.id === r.impasto_id && i.disponibile) ? r.impasto_id : (imp ? imp.id : null),
+        aggiunte: (r.aggiunte || []).filter(id => G(id)?.disponibile), tolti: r.tolti || [], qta: r.qta });
+    }
+    stimaRes = null; render(); aggiornaStima();
+    toast(saltate ? 'Aggiunta la tua solita (alcune pizze non sono più in listino)' : 'Aggiunta la tua solita');
+  },
   ripaga: () => vaiAlPagamento(ritorno.id),
   chiudiRitorno: () => { ritorno = null; render(); controllaUltimo(); },
   apri: d => { if (!formati.length) { toast('La pizzeria non ha ancora impostato i formati', true); return; }
@@ -277,11 +377,12 @@ const ACT = {
     if (!cliente.nome.trim()) { errore = 'Scrivi un nome, così ti chiamiamo al ritiro.'; render(); $('#c-nome')?.focus(); return; }
     inviando = true; errore = ''; render();
     const online = pagaOnline();
-    const { data, error } = await sb.rpc('crea_ordine', { p_pizzeria: P.id, p_nome: cliente.nome.trim(), p_righe: perRpc(cart),
-      p_telefono: TOTEM ? null : cliente.tel.trim() || null, p_canale: TOTEM ? 'totem' : 'web',
-      p_preferito: cliente.quando ? new Date(+cliente.quando).toISOString() : null, p_pagamento: online ? 'online' : 'al_ritiro' });
+    const { data, error } = await sb.rpc('invia_ordine', { p_pizzeria: P.id, p_nome: cliente.nome.trim(), p_righe: perRpc(cart),
+      p_telefono: cliente.tel.trim() || null, p_canale: TOTEM ? 'totem' : 'web',
+      p_preferito: cliente.quando ? new Date(+cliente.quando).toISOString() : null, p_pagamento: online ? 'online' : 'al_ritiro',
+      p_extra: perExtra() });
     if (error) { inviando = false; errore = msgErr(error); render(); aggiornaStima(); return; }
-    if (online) {
+    if (online && data.pagamento === 'online') {
       ultimo = { id: data.id }; lsSet('pz_ultimo_' + SLUG, ultimo);
       cart = []; stimaRes = null;
       const ok = await vaiAlPagamento(data.id, data.numero);
@@ -291,16 +392,29 @@ const ACT = {
     inviando = false;
     done = { ...data, nome: cliente.nome.trim() };
     if (!TOTEM) { ultimo = { id: data.id }; lsSet('pz_ultimo_' + SLUG, ultimo); statoUltimo = { numero: data.numero, stato: 'ricevuto', ritiro: data.ritiro, totale: data.totale }; }
-    cart = []; cliente = { nome: TOTEM ? '' : cliente.nome, tel: TOTEM ? '' : cliente.tel, quando: '' }; stimaRes = null; render();
+    cart = []; cliente = { nome: TOTEM ? '' : cliente.nome, tel: TOTEM ? '' : cliente.tel, quando: '' }; stimaRes = null;
+    fid = { ...fid, codice: '', amico: '', usaPremio: false, consensoToccato: false }; scheda = null; schedaTel = '';
+    if (!TOTEM) cercaScheda();
+    render();
     if (TOTEM) { clearTimeout(totemTimer); totemTimer = setTimeout(() => { done = null; render(); }, 20000); }
   },
   nuovo: () => { done = null; clearTimeout(totemTimer); render(); },
 };
 document.addEventListener('click', e => { const el = e.target.closest('[data-act]'); if (el) ACT[el.dataset.act]?.(el.dataset, el, e); });
 document.addEventListener('input', e => {
-  const t = e.target; if (!t.dataset.c) return;
+  const t = e.target;
+  if (t.dataset.f) { fid[t.dataset.f] = t.dataset.f === 'compleanno' ? t.value : t.value.toUpperCase().trim(); aggiornaStima(); return; }
+  if (!t.dataset.c) return;
+  if (t.dataset.c === 'tel') { cliente.tel = t.value; cercaScheda(); return; }
   cliente[t.dataset.c] = t.value;
   if (t.dataset.c === 'quando') { stimaRes = null; $('#stima').innerHTML = vStima(); aggiornaStima(); }
+});
+document.addEventListener('change', e => {
+  const t = e.target; if (!t.dataset.chk) return;
+  fid[t.dataset.chk] = t.checked;
+  if (t.dataset.chk === 'consenso') fid.consensoToccato = true;
+  if (t.dataset.chk === 'salva') { $('#fid-info').innerHTML = vFid(); }
+  aggiornaStima();
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && B) { B = null; renderModal(); } });
 // ogni 30 secondi aggiorna la stima (la coda cambia) e lo stato dell'ultimo ordine
