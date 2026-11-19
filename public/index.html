@@ -262,12 +262,13 @@ function vFid() {
   if (!scheda || schedaTel !== cliente.tel) return '<span class="muted" style="font-size:13px">Cerco la tua scheda…</span>';
   const f = FED();
   const consenso = `<label class="check"><input type="checkbox" id="c-consenso" data-chk="consenso" ${fid.consenso ? 'checked' : ''}> Voglio ricevere offerte e novità su WhatsApp</label>`;
+  if (scheda.trovato && !scheda.fiducia && scheda.biometria) return vBio();
   if (scheda.trovato && !scheda.fiducia) {
     return `<div class="fid">
       <div class="top"><b>Numero riconosciuto</b>${on('timbri') ? `<span class="mono">${scheda.timbri}/${scheda.soglia} timbri</span>` : ''}</div>
       <span class="muted" style="font-size:13px">${on('solo_dispositivo')
         ? 'La tessera è legata al telefono con cui ti sei registrato: da questo telefono non raccogli timbri e non usi premi o sconti personali. Si abilita da solo quando ritiri di persona un ordine fatto da qui, oppure chiedilo in pizzeria.'
-        : 'Per proteggere i tuoi dati, nome, premi e "la mia solita" si vedono solo dal telefono con cui ti sei registrato. I timbri di questo ordine si sommano comunque. Questo telefono si abilita da solo quando ritiri l\'ordine in pizzeria.'}</span>
+        : 'Per proteggere i tuoi dati, nome, premi e le tue pizze si vedono solo dal telefono con cui ti sei registrato. I timbri di questo ordine si sommano comunque. Questo telefono si abilita da solo quando ritiri l\'ordine in pizzeria.'}</span>
     </div>`;
   }
   if (scheda.trovato) {
@@ -278,7 +279,7 @@ function vFid() {
       ${on('timbri') ? `<div class="stamps" aria-hidden="true">${Array.from({ length: Math.min(tot, 20) }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</div>` : ''}
       ${puo ? `<button class="chip" data-act="premio" aria-pressed="${fid.usaPremio}">${fid.usaPremio ? '✓ ' : ''}Usa la pizza omaggio</button>` : ''}
       ${+scheda.credito > 0 ? `<span class="muted" style="font-size:13px">Hai ${eur(scheda.credito)} di credito per gli amici invitati: lo usi su questo ordine.</span>` : ''}
-      ${scheda.solita && scheda.solita.length ? `<button class="ghost" data-act="solita">Riordina la tua solita (${scheda.solita.map(r => r.qta + '× ' + esc(r.nome)).join(', ')})</button>` : ''}
+      ${vTuePizze()}
       ${!scheda.consenso ? consenso : ''}
     </div>`;
   }
@@ -286,6 +287,85 @@ function vFid() {
     <label class="check"><input type="checkbox" id="c-salva" data-chk="salva" ${fid.salva ? 'checked' : ''}> Salva il mio numero per ${on('timbri') ? 'raccogliere timbri e ' : ''}ricevere i vantaggi</label>
     ${fid.salva ? consenso : ''}
     <span class="muted" style="font-size:12px">Usiamo il numero solo per riconoscerti e, se lo scegli, per scriverti su WhatsApp. Puoi chiedere di cancellarlo quando vuoi.</span>
+  </div>`;
+}
+// Face ID / impronta (passkey): il volto o l'impronta non lasciano mai il telefono
+let bioBusy = false, bioPossibile = null;
+try { window.PublicKeyCredential?.isUserVerifyingPlatformAuthenticatorAvailable?.().then(v => { bioPossibile = !!v; const el = $('#fid-info'); if (el && scheda?.biometria) el.innerHTML = vFid(); }).catch(() => { bioPossibile = false; }); } catch (e) { bioPossibile = false; }
+if (!window.PublicKeyCredential) bioPossibile = false;
+function vBio() {
+  const reg = scheda.biometria === 'registra';
+  const no = bioPossibile === false;
+  return `<div class="fid bio">
+    <div class="top"><b>${reg ? 'Proteggi la tua tessera' : 'Numero riconosciuto'}</b>${on('timbri') ? `<span class="mono">${scheda.timbri}/${scheda.soglia} timbri</span>` : ''}</div>
+    <span class="muted" style="font-size:13px">${reg
+      ? 'La pizzeria protegge timbri, premi e sconti con Face ID o impronta: così solo tu puoi usarli. Lo attivi una volta, poi lo confermi quando ordini.'
+      : 'Conferma che sei tu con Face ID o impronta per vedere la tua tessera, raccogliere i timbri e usare premi e sconti.'}</span>
+    ${no ? '<span class="avviso">Questo telefono o browser non supporta Face ID o impronta. Puoi ordinare lo stesso, ma senza i vantaggi della tessera.</span>'
+         : `<button class="bio-btn" data-act="bio" ${bioBusy ? 'disabled' : ''}><span aria-hidden="true">${ICONA_BIO}</span>${bioBusy ? 'Attendo la conferma…' : reg ? 'Attiva Face ID o impronta' : 'Sblocca con Face ID o impronta'}</button>`}
+    <span class="muted" style="font-size:12px">Il tuo volto e la tua impronta restano sul telefono: alla pizzeria arriva solo la conferma.</span>
+  </div>`;
+}
+const ICONA_BIO = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 9.5v1M15 9.5v1M12 9.5v3.5h-1M9.5 15.5c1.4 1.1 3.6 1.1 5 0"/></svg>';
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const da64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+async function bio() {
+  if (bioBusy || !scheda?.biometria) return;
+  const reg = scheda.biometria === 'registra', base = { pizzeria: P.id, telefono: cliente.tel, dispositivo: DEV };
+  bioBusy = true; $('#fid-info').innerHTML = vFid();
+  try {
+    const o = await invoca('passkey', { ...base, azione: reg ? 'registra-opzioni' : 'accedi-opzioni' });
+    if (o.error) throw new Error(o.error);
+    const op = o.data.opzioni, ids = l => (l || []).map(c => ({ ...c, id: da64u(c.id) }));
+    let cred, risposta;
+    if (reg) {
+      cred = await navigator.credentials.create({ publicKey: { ...op, challenge: da64u(op.challenge), user: { ...op.user, id: da64u(op.user.id) }, excludeCredentials: ids(op.excludeCredentials) } });
+      risposta = { id: cred.id, rawId: b64u(cred.rawId), type: cred.type, authenticatorAttachment: cred.authenticatorAttachment, clientExtensionResults: cred.getClientExtensionResults(),
+        response: { clientDataJSON: b64u(cred.response.clientDataJSON), attestationObject: b64u(cred.response.attestationObject), transports: cred.response.getTransports ? cred.response.getTransports() : [] } };
+    } else {
+      cred = await navigator.credentials.get({ publicKey: { ...op, challenge: da64u(op.challenge), allowCredentials: ids(op.allowCredentials) } });
+      risposta = { id: cred.id, rawId: b64u(cred.rawId), type: cred.type, authenticatorAttachment: cred.authenticatorAttachment, clientExtensionResults: cred.getClientExtensionResults(),
+        response: { clientDataJSON: b64u(cred.response.clientDataJSON), authenticatorData: b64u(cred.response.authenticatorData), signature: b64u(cred.response.signature),
+          userHandle: cred.response.userHandle ? b64u(cred.response.userHandle) : undefined } };
+    }
+    const v = await invoca('passkey', { ...base, azione: reg ? 'registra-verifica' : 'accedi-verifica', sfida: o.data.sfida, risposta });
+    if (v.error) throw new Error(v.error);
+    toast(reg ? 'Face ID o impronta attivati: la tessera è protetta' : 'Fatto, sei tu! Ecco la tua tessera');
+    schedaTel = ''; cercaScheda();
+  } catch (e) {
+    toast(e && e.name === 'NotAllowedError' ? 'Conferma annullata' : msgErr(e), true);
+  } finally { bioBusy = false; const el = $('#fid-info'); if (el) el.innerHTML = vFid(); }
+}
+
+// Le pizze che il cliente ha ordinato nel tempo, anche personalizzate: le più ordinate prima
+let tutteTue = false;
+function tuaRiga(t) {
+  const pz = t.tipo === 'listino' ? PZ(t.pizza_id) : null;
+  if ((t.tipo === 'listino' && !pz) || !formati.some(f => f.id === t.formato_id)) return { ok: false };
+  const imp = impasti.find(i => i.disponibile);
+  const mancano = (t.aggiunte || []).filter(id => !G(id)?.disponibile).map(id => G(id)?.nome || (t.aggiunte_nomi || [])[t.aggiunte.indexOf(id)]).filter(Boolean);
+  const r = { tipo: t.tipo, pizza: t.pizza_id, formato: t.formato_id,
+    impasto: impasti.some(i => i.id === t.impasto_id && i.disponibile) ? t.impasto_id : (imp ? imp.id : null),
+    aggiunte: (t.aggiunte || []).filter(id => G(id)?.disponibile), tolti: (t.tolti || []).filter(id => G(id)), qta: 1 };
+  return { ok: true, r, mancano };
+}
+function vTuePizze() {
+  const L = scheda.pizze || [];
+  if (!L.length) return '';
+  const vis = tutteTue ? L : L.slice(0, 4);
+  return `<div class="tue"><span class="label">Le tue pizze</span>
+    ${vis.map((t, i) => {
+      const x = tuaRiga(t), r = x.r;
+      const det = [F(t.formato_id)?.id === t.formato_id ? F(t.formato_id).nome : t.formato_nome, IM(t.impasto_id)?.nome || t.impasto_nome,
+        ...(t.aggiunte_nomi || []).map(n => '+ ' + String(n).toLowerCase()), ...(t.tolti_nomi || []).map(n => 'senza ' + String(n).toLowerCase())].filter(Boolean).join(' · ');
+      return `<div class="tua">
+        <span class="tua-ic" aria-hidden="true">${pizzaSVG(x.ok ? ingrRiga(r) : [], { seme: t.pizza_id || 'pers' + i, rossa: rossa() })}</span>
+        <div class="tua-txt"><b>${esc(t.tipo === 'pers' ? 'La tua pizza' : (PZ(t.pizza_id)?.nome || t.nome))}</b><span class="muted">${esc(det)}</span>
+          <span class="muted mono" style="font-size:11px">${t.volte === 1 ? 'ordinata 1 volta' : `ordinata ${t.volte} volte`}${x.ok && x.mancano.length ? ` · oggi senza ${esc(x.mancano.join(', ').toLowerCase())}` : ''}</span></div>
+        ${x.ok ? `<span class="tua-prezzo"><span class="mono">${eur(prezzo(r))}</span><button class="ghost small" data-act="tua" data-i="${i}" aria-label="Aggiungi ${esc(t.nome)}">+ Aggiungi</button></span>`
+               : '<span class="muted" style="font-size:12px">Non più in listino</span>'}
+      </div>`; }).join('')}
+    ${L.length > 4 ? `<button class="ghost small" data-act="tutteTue">${tutteTue ? 'Mostra meno' : `Mostra tutte (${L.length})`}</button>` : ''}
   </div>`;
 }
 let schedaTimer;
@@ -450,17 +530,14 @@ async function gestisciRitorno() {
 const ACT = {
   paga: d => { pagScelta = d.v; render(); },
   premio: () => { fid.usaPremio = !fid.usaPremio; $('#fid-info').innerHTML = vFid(); aggiornaStima(); },
-  solita: () => {
-    const imp = impasti.find(i => i.disponibile);
-    let saltate = 0;
-    for (const r of scheda.solita) {
-      if (!formati.some(f => f.id === r.formato_id) || (r.tipo === 'listino' && !PZ(r.pizza_id))) { saltate++; continue; }
-      cart.push({ tipo: r.tipo, pizza: r.pizza_id, formato: r.formato_id, impasto: impasti.some(i => i.id === r.impasto_id && i.disponibile) ? r.impasto_id : (imp ? imp.id : null),
-        aggiunte: (r.aggiunte || []).filter(id => G(id)?.disponibile), tolti: r.tolti || [], qta: r.qta });
-    }
-    stimaRes = null; render(); aggiornaStima();
-    toast(saltate ? 'Aggiunta la tua solita (alcune pizze non sono più in listino)' : 'Aggiunta la tua solita');
+  tua: d => {
+    const t = (scheda.pizze || [])[+d.i]; if (!t) return;
+    const x = tuaRiga(t); if (!x.ok) return;
+    cart.push(x.r); stimaRes = null; render(); aggiornaStima();
+    toast(`Aggiunta: ${t.tipo === 'pers' ? 'la tua pizza' : t.nome}`);
   },
+  bio: () => bio(),
+  tutteTue: () => { tutteTue = !tutteTue; $('#fid-info').innerHTML = vFid(); },
   ripaga: () => vaiAlPagamento(ritorno.id),
   chiudiRitorno: () => { ritorno = null; render(); controllaUltimo(); },
   apri: d => { if (!formati.length) { toast('La pizzeria non ha ancora impostato i formati', true); return; }
