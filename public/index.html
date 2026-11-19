@@ -265,7 +265,9 @@ function vFid() {
   if (scheda.trovato && !scheda.fiducia) {
     return `<div class="fid">
       <div class="top"><b>Numero riconosciuto</b>${on('timbri') ? `<span class="mono">${scheda.timbri}/${scheda.soglia} timbri</span>` : ''}</div>
-      <span class="muted" style="font-size:13px">Per proteggere i tuoi dati, nome, premi e "la mia solita" si vedono solo dal telefono con cui ti sei registrato. I timbri di questo ordine si sommano comunque. Questo telefono si abilita da solo quando ritiri l'ordine in pizzeria.</span>
+      <span class="muted" style="font-size:13px">${on('solo_dispositivo')
+        ? 'La tessera è legata al telefono con cui ti sei registrato: da questo telefono non raccogli timbri e non usi premi o sconti personali. Si abilita da solo quando ritiri di persona un ordine fatto da qui, oppure chiedilo in pizzeria.'
+        : 'Per proteggere i tuoi dati, nome, premi e "la mia solita" si vedono solo dal telefono con cui ti sei registrato. I timbri di questo ordine si sommano comunque. Questo telefono si abilita da solo quando ritiri l\'ordine in pizzeria.'}</span>
     </div>`;
   }
   if (scheda.trovato) {
@@ -316,10 +318,11 @@ function vStima() {
     <span class="ora">${ora(e.ritiro)}</span>
     <span class="muted" style="font-size:13px">${giorno(e.ritiro) ? esc(giorno(e.ritiro)) + ' · ' : ''}${e.pizze_davanti ? `${e.pizze_davanti} pizze in coda prima delle tue` : 'Il forno è libero'}</span>
     ${e.oltre_chiusura ? '<span style="font-size:13px">Oltre l\'orario di chiusura: prova con meno pizze.</span>' : ''}</div>
-    ${(e.sconti && e.sconti.length) || (e.avvisi && e.avvisi.length) || e.timbri_guadagnati ? `<div class="sconti">
+    ${(e.sconti && e.sconti.length) || (e.avvisi && e.avvisi.length) || e.timbri_guadagnati || e.nota ? `<div class="sconti">
       ${(e.sconti || []).map(x => `<div class="sc"><span>${esc(x.descrizione)}</span><span class="mono">−${eur(x.importo)}</span></div>`).join('')}
       ${e.sconti && e.sconti.length ? `<div class="sc tot"><span>Da pagare</span><span class="mono"><s class="muted">${eur(e.totale_lordo)}</s> ${eur(e.totale)}</span></div>` : ''}
       ${(e.avvisi || []).map(a => `<span class="avviso">${esc(a)}</span>`).join('')}
+      ${e.nota ? `<span class="avviso">🔒 ${esc(e.nota)}</span>` : ''}
       ${e.timbri_guadagnati ? `<span class="muted" style="font-size:13px">Con questo ordine guadagni ${e.timbri_guadagnati} timbri</span>` : ''}
     </div>` : ''}`;
 }

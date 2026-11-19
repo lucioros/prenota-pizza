@@ -402,6 +402,7 @@ function vFedelta(parte) {
     <p class="muted">Attiva le offerte che vuoi. Se un ordine ha diritto a più sconti si applica il più conveniente; la pizza omaggio della tessera e il credito amico si sommano. I clienti si riconoscono dal numero di telefono.</p>
     <div class="offers">
       ${sw('timbri', 'Tessera a timbri', 'Ogni pizza ordinata vale un timbro. Raggiunta la soglia, il cliente può avere in omaggio la pizza meno cara dell\'ordine.', num('timbri.soglia', 'Pizze per un omaggio', 'min="1"'))}
+      ${sw('solo_dispositivo', 'Tessera legata al telefono', 'Timbri, premi, credito e sconti personali valgono solo dal telefono con cui il cliente si è registrato. Un telefono nuovo si abilita quando il cliente ritira di persona un ordine fatto da lì, oppure lo abiliti tu dalla pagina Clienti.')}
       ${sw('giorni_doppi', 'Timbri doppi nei giorni lenti', 'Nei giorni scelti ogni pizza vale due timbri.', `<div class="chips">${GG.map((g, i) => `<button class="chip" data-act="fedGiorno" data-g="${i}" aria-pressed="${(f.giorni_doppi.giorni || []).includes(i)}">${g}</button>`).join('')}</div>`)}
       ${sw('fasce', 'Sconto nelle fasce tranquille', 'Sconto a chi sceglie di ritirare in un orario in cui il forno è meno pieno.', `${fasce}<button class="ghost" data-act="fasciaAdd">+ Aggiungi fascia</button>`)}
       ${sw('amico', 'Porta un amico', 'Ogni cliente ha un codice da condividere. L\'amico ha uno sconto sul primo ordine; chi l\'ha invitato riceve lo stesso importo di credito quando l\'amico ritira.', num('amico.sconto', 'Sconto e credito (€)'))}
