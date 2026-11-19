@@ -324,3 +324,28 @@ td .ic-sel{width:64px;padding:5px 4px;font-size:16px}
 .ticket.al-tavolo{background:color-mix(in srgb, var(--ok) 5%, var(--surface))}
 .qr-mini{display:block;width:60px;background:#fff;border-radius:6px}
 .qr-mini svg{display:block;width:100%;height:auto}
+.coda-forni{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:16px 0 24px}
+.coda-forni .tl-p{grid-column:1/-1}
+@media (min-width:1000px){.coda-forni .tl-p{grid-column:auto / span 2}}
+.forno-p{display:flex;flex-direction:column;gap:8px}
+.forno-p .top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.forno-r{display:grid;grid-template-columns:44px 66px minmax(0,1fr);align-items:center;gap:6px}
+.forno-r .mono{font-size:20px}
+.forno-r .oven{margin:0;grid-template-columns:repeat(var(--cap),15px);gap:3px}
+.forno-r .oven i{height:15px;border-width:2px}
+.forno-t{color:var(--accent)}
+.forni{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:12px}
+@media (max-width:500px){.forni{grid-template-columns:1fr}.forno-c .grid-gen{grid-template-columns:1fr 1fr}}
+.forno-c{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px;display:flex;flex-direction:column;gap:12px}
+.forno-c.spento{opacity:.6}
+.forno-c .top{display:flex;justify-content:space-between;gap:10px;align-items:center}
+.forno-c .grid-gen{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.forno-c .field input,.forno-c .field select,.fo-nome{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:7px 9px;width:100%;min-width:0}
+.fo-nome{font-weight:600;font-size:16px;max-width:200px}
+.fo-del{align-self:flex-start;font-size:13px}
+.ingr-box{max-width:620px;text-align:left;align-items:stretch}
+.sost{display:flex;flex-direction:column;gap:12px}
+.sost-r{display:flex;flex-direction:column;gap:6px;border-top:1px dashed var(--line);padding-top:10px}
+.sost-r select{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px}
+.sost-l{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.ingr-box .acts{display:flex;gap:8px;flex-wrap:wrap}

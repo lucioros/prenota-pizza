@@ -17,6 +17,7 @@
 </header>
 <main class="wrap" id="main"></main>
 <div id="modal"></div>
+<div id="modal2"></div>
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -30,7 +31,8 @@ let visti = null, stripeBusy = false;
 let clienti = [], topPers = [], filtroCli = 'tutti', cercaCli = '';
 let authMode = 'login', authMsg = '', authBusy = false;
 // ruolo: 'gestore' = titolare (vede tutto), 'banco' = tablet del banco (solo la coda)
-let tavoli = [];
+let tavoli = [], forni = [], modIngr = null;
+const USO = { tutti: 'Asporto e tavoli', tavoli: 'Solo tavoli', asporto: 'Solo asporto' };
 const nomeTavolo = id => tavoli.find(t => t.id === id)?.nome || 'Tavolo';
 let RUOLO = null, addetti = [], accessi = [], pinMod = null, prod = null, periodo = 'oggi';
 const TITOLARE = () => RUOLO === 'gestore';
@@ -97,6 +99,8 @@ async function caricaAddetti() {
   addetti = data; D.addetti = addetti;
   const tv = await sb.from('tavoli').select('id, pizzeria_id, nome, codice, attivo, ordine').eq('pizzeria_id', P.id).order('ordine').order('nome');
   if (!tv.error) { tavoli = tv.data; D.tavoli = tavoli; }
+  const fo = await sb.from('forni').select('*').eq('pizzeria_id', P.id).order('ordine').order('nome');
+  if (!fo.error) { forni = fo.data; D.forni = forni; }
 }
 // Finestra "Chi inizia?": il pizzaiolo sceglie il suo nome e scrive il PIN
 function renderPin() {
@@ -182,20 +186,28 @@ let audio;
 function suona() { try { audio = audio || new AudioContext(); const o = audio.createOscillator(), g = audio.createGain(); o.frequency.value = 880; g.gain.value = .15; o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + .25); } catch (e) { } }
 
 // quanti pizzaioli lavorano in un certo momento (stessa regola del database)
-function pizzaioliAlle(t) {
+function pizzaioliAlle(t, fo) {
   const d = new Date(t), hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-  for (const f of P.pizzaioli_fasce || []) if (hhmm >= f.da && hhmm < f.a) return Math.max(0, +f.n);
-  return +P.pizzaioli || 1;
+  for (const f of fo.pizzaioli_fasce || []) if (hhmm >= f.da && hhmm < f.a) return Math.max(0, +f.n);
+  return Math.max(0, +fo.pizzaioli);
 }
 function vCoda() {
-  const now = Date.now(), cap = +P.capacita_forno;
-  const tutti = ordini.flatMap(o => o.slot_forno.map(s => ({ risorsa: s.risorsa || 'forno', stato: o.stato, start: +new Date(s.inizio), end: +new Date(s.fine), posti: s.posti })));
+  const now = Date.now(), attivi = forni.filter(f => f.attivo), primo = forni[0]?.id;
+  const cap = attivi.reduce((a, f) => a + +f.posti, 0) || 1;
+  const tutti = ordini.flatMap(o => o.slot_forno.map(s => ({ risorsa: s.risorsa || 'forno', forno: s.forno_id || primo, stato: o.stato, start: +new Date(s.inizio), end: +new Date(s.fine), posti: s.posti })));
   const slots = tutti.filter(s => s.risorsa === 'forno');
   const banco = tutti.filter(s => s.risorsa === 'banco' && s.stato !== 'pronto');
-  const alBanco = x => banco.filter(s => s.start <= x && x < s.end).length;
-  const nPz = pizzaioliAlle(now), bancoOra = Math.min(alBanco(now), Math.max(nPz, alBanco(now)));
-  const usati = x => slots.reduce((a, s) => a + (s.start <= x && x < s.end ? s.posti : 0), 0);
-  const adesso = Math.min(cap, usati(now)), nCell = Math.min(cap, 12);
+  const usati = (x, fid) => slots.reduce((a, s) => a + ((!fid || s.forno === fid) && s.start <= x && x < s.end ? s.posti : 0), 0);
+  const alBanco = (x, fid) => banco.filter(s => s.forno === fid && s.start <= x && x < s.end).length;
+  // un riquadro per ogni forno attivo: posti occupati e pizzaioli al lavoro
+  const pannelliForni = attivi.map(f => {
+    const c = +f.posti, u = Math.min(c, usati(now, f.id)), n = pizzaioliAlle(now, f), bo = alBanco(now, f.id), nc = Math.min(c, 12);
+    return `<div class="panel forno-p"><div class="top"><span class="label">${esc(f.nome)}</span>${attivi.length > 1 || f.uso !== 'tutti' ? `<span class="pill">${USO[f.uso]}</span>` : ''}</div>
+      <div class="forno-r"><span class="mono">${u}/${c}</span><span class="muted">posti</span><div class="oven" style="--cap:${nc}">${Array.from({ length: nc }, (_, i) => `<i class="${i < u ? 'on' : ''}"></i>`).join('')}</div></div>
+      <div class="forno-r"><span class="mono">${Math.min(bo, Math.max(n, bo))}/${n}</span><span class="muted">${n === 1 ? 'pizzaiolo' : 'pizzaioli'}</span><div class="oven banco" style="--cap:${Math.max(1, Math.min(n, 12))}">${Array.from({ length: Math.min(n, 12) }, (_, i) => `<i class="${i < bo ? 'on' : ''}"></i>`).join('')}</div></div>
+      <span class="muted" style="font-size:12px">${n === 0 ? 'Nessun pizzaiolo in questo momento' : bo >= n ? 'Il banco è il collo di bottiglia' : 'Pizzaioli liberi'}</span></div>`;
+  }).join('') || '<div class="panel"><span class="label">Forni</span><p class="muted">Nessun forno attivo: accendine uno in Impostazioni → Forni e formati.</p></div>';
+  const fornoDi = o => [...new Set(o.slot_forno.filter(s => (s.risorsa || 'forno') === 'forno').map(s => forni.find(f => f.id === (s.forno_id || primo))?.nome).filter(Boolean))];
   const bars = Array.from({ length: 12 }, (_, k) => { const x = now + k * 5 * MIN, u = Math.min(cap, usati(x)); return `<div class="${u >= cap ? 'full' : ''}" style="height:${Math.max(3, u / cap * 100)}%" title="${ora(x)}: ${u}/${cap} posti"></div>`; }).join('');
   const lab = Array.from({ length: 12 }, (_, k) => `<span>${k % 3 === 0 ? ora(now + k * 5 * MIN) : ''}</span>`).join('');
   const nomi = { ricevuto: 'Ricevuto', preparazione: 'In preparazione', pronto: 'Pronto' };
@@ -206,6 +218,7 @@ function vCoda() {
     return `<article class="ticket ${o.stato} ${tav ? 'al-tavolo' : ''}">
       ${tav ? `<span class="tav-badge">🍽️ ${esc(nomeTavolo(o.tavolo_id))}</span>` : ''}
       <div class="top"><span class="n">#${o.numero}</span><span class="pill ${o.stato}">${nomi[o.stato]}</span></div>
+      ${forni.length > 1 && fornoDi(o).length ? `<span class="chi forno-t">🔥 ${esc(fornoDi(o).join(' + '))}</span>` : ''}
       ${o.preparato_da ? `<span class="chi">👨‍🍳 ${esc(nomeAddetto(o.preparato_da) || 'pizzaiolo')} · dalle ${ora(o.iniziato_il)}</span>` : ''}
       <div class="top"><span><b>${esc(o.nome_cliente)}</b> <span class="muted" style="font-size:12px">${tav ? 'in sala' : o.canale === 'totem' ? 'totem' : 'online'}</span>${o.telefono ? `<br><span class="muted mono" style="font-size:12px">${esc(o.telefono)}</span>` : ''}</span>
         <span class="rit">${ora(o.ritiro)}<br><span class="muted" style="font-size:12px;font-family:var(--f-body)">${mins > 0 ? 'tra ' + mins + ' min' : mins === 0 ? 'adesso' : 'da ' + (-mins) + ' min'}</span></span></div>
@@ -221,13 +234,8 @@ function vCoda() {
   }).join('');
   return `<div class="coda-bar"><h1 class="page-h">Coda forno</h1>
       <button class="ghost" data-act="ritardo">Siamo in ritardo: +5 min</button></div>
-    <div class="coda-top">
-      <div class="panel"><span class="label">Forno adesso</span><div class="mono" style="font-size:26px">${adesso}/${cap} <span class="muted" style="font-size:14px;font-family:var(--f-body)">posti</span></div>
-        <div class="oven" style="--cap:${nCell}">${Array.from({ length: nCell }, (_, i) => `<i class="${i < adesso ? 'on' : ''}"></i>`).join('')}</div></div>
-      <div class="panel"><span class="label">Banco adesso</span><div class="mono" style="font-size:26px">${bancoOra}/${nPz} <span class="muted" style="font-size:14px;font-family:var(--f-body)">${nPz === 1 ? 'pizzaiolo' : 'pizzaioli'}</span></div>
-        <div class="oven banco" style="--cap:${Math.max(1, Math.min(nPz, 12))}">${Array.from({ length: Math.min(nPz, 12) }, (_, i) => `<i class="${i < bancoOra ? 'on' : ''}"></i>`).join('')}</div>
-        <span class="muted" style="font-size:12px">${bancoOra >= nPz && nPz > 0 ? 'Il banco è il collo di bottiglia' : 'Pizzaioli liberi'}</span></div>
-      <div class="panel"><span class="label">Forno, prossimi 60 minuti</span><div class="tl">${bars}</div><div class="tl-x">${lab}</div></div>
+    <div class="coda-forni">${pannelliForni}
+      <div class="panel tl-p"><span class="label">${attivi.length > 1 ? 'Tutti i forni' : 'Forno'}, prossimi 60 minuti</span><div class="tl">${bars}</div><div class="tl-x">${lab}</div></div>
     </div>
     <span class="label">${ordini.length} ${ordini.length === 1 ? "ordine" : "ordini"} da preparare${ritiratiOggi ? ` · ${ritiratiOggi} ritirati oggi` : ''}</span>
     ${ordini.length ? `<div class="tickets">${tk}</div>` : `<div class="empty" style="margin-top:14px">Nessun ordine in coda. I nuovi ordini da app e totem compaiono qui da soli.</div>`}`;
@@ -242,12 +250,14 @@ async function caricaImpostazioni() {
   const ids = z.data.map(p => p.id);
   const pi = ids.length ? await sb.from('pizza_ingredienti').select('*').in('pizza_id', ids) : { data: [] };
   const ps = await sb.from('pizzerie_stripe').select('*').eq('pizzeria_id', P.id).maybeSingle();
-  D = { formati: f.data, impasti: i.data, ingredienti: g.data, pizze: z.data, pi: pi.data || [], stripe: ps.data || null, codici_sconto: cs.data || [] };
+  D = { formati: f.data, impasti: i.data, ingredienti: g.data, pizze: z.data, pi: pi.data || [], stripe: ps.data || null, codici_sconto: cs.data || [], forni: forni, addetti: addetti, tavoli: tavoli };
+  const so = await sb.from('sostituzioni').select('*').eq('pizzeria_id', P.id);
+  D.sostituzioni = so.data || [];
 }
 const ingrDi = id => D.pi.filter(x => x.pizza_id === id).map(x => x.ingrediente_id);
 const nomeIngr = id => D.ingredienti.find(g => g.id === id)?.nome || '';
 
-const SCHEDE_IMP = [['generale', 'Pizzeria'], ['forno', 'Forno e formati'], ['persone', 'Pizzaioli e accessi'], ['sala', 'Sala e tavoli'], ['listino', 'Listino'], ['ingredienti', 'Ingredienti e impasti'],
+const SCHEDE_IMP = [['generale', 'Pizzeria'], ['forno', 'Forni e formati'], ['persone', 'Pizzaioli e accessi'], ['sala', 'Sala e tavoli'], ['listino', 'Listino'], ['ingredienti', 'Ingredienti e impasti'],
   ['pagamenti', 'Pagamenti'], ['offerte', 'Fedeltà e offerte'], ['whatsapp', 'Messaggi WhatsApp']];
 let impTab = lsGet('pz_imp_tab') || 'generale';
 function vImp() {
@@ -256,9 +266,9 @@ function vImp() {
     ? `<td class="c"><input type="checkbox" id="${t}-${row.id}-${f}" data-t="${t}" data-id="${row.id}" data-f="${f}" ${row[f] ? 'checked' : ''} aria-label="${f}"></td>`
     : `<td><input type="${type}" id="${t}-${row.id}-${f}" data-t="${t}" data-id="${row.id}" data-f="${f}" value="${esc(row[f])}" ${type === 'number' ? 'step="any" inputmode="decimal"' : ''} ${extra} aria-label="${f}"></td>`;
   const del = (t, row) => `<td class="c"><button class="del ${conferma === row.id ? 'sure' : ''}" data-act="del" data-t="${t}" data-id="${row.id}" aria-label="Elimina">${conferma === row.id ? 'Elimina?' : '×'}</button></td>`;
-  const cap = +P.capacita_forno;
+  const cap = Math.max(0, ...forni.filter(f => f.attivo).map(f => +f.posti));
   const formati = D.formati.map(f => `<tr>${cell('formati', f, 'nome')}${cell('formati', f, 'preparazione', 'number', 'min="0"')}${cell('formati', f, 'minuti', 'number', 'min="0.25"')}${cell('formati', f, 'posti', 'number', 'min="1"')}${cell('formati', f, 'supplemento', 'number')}${cell('formati', f, 'moltiplicatore_aggiunte', 'number')}${cell('formati', f, 'attivo', 'checkbox')}${del('formati', f)}</tr>
-    ${+f.posti > cap ? `<tr><td colspan="8" class="warn-line">Questo formato occupa più posti di quanti ne abbia il forno.</td></tr>` : ''}`).join('');
+    ${+f.posti > cap ? `<tr><td colspan="8" class="warn-line">Questo formato occupa più posti di quanti ne abbia il forno più grande tra quelli attivi.</td></tr>` : ''}`).join('');
   const impasti = D.impasti.map(m => `<tr>${cell('impasti', m, 'nome')}${cell('impasti', m, 'sovrapprezzo', 'number')}${cell('impasti', m, 'disponibile', 'checkbox')}${del('impasti', m)}</tr>`).join('');
   const cats = [...new Set([...CATS, ...D.ingredienti.map(g => g.categoria)])];
   const ingr = D.ingredienti.map(g => `<tr><td><select class="ic-sel" data-null data-t="ingredienti" data-id="${g.id}" data-f="icona" aria-label="icona di ${esc(g.nome)}">
@@ -279,17 +289,27 @@ function vImp() {
       <p class="muted">Il primo va sui social, su Google e sui volantini. Il secondo si apre sul totem nel locale.</p>
       <div class="links"><div class="field"><span class="label">Ordini online</span><code class="sel">${esc(linkCliente)}</code></div>
       <div class="field"><span class="label">Totem nel locale</span><code class="sel">${esc(linkTotem)}</code></div></div></section>`,
-    forno: () => `<section class="set-sec"><h2 class="sec-h">Forno</h2>
-      <p class="muted">Servono a calcolare l'orario di ritiro. Il margine si aggiunge a ogni ordine per stare larghi.</p>
-      <div class="grid-gen">${gen('capacita_forno', 'Posti nel forno', 'number', 'min="1"')}${gen('margine_minuti', 'Margine di sicurezza (min)', 'number', 'min="0"')}</div></section>
-      <section class="set-sec"><h2 class="sec-h">Pizzaioli</h2>
-      <p class="muted">Quante persone preparano le pizze. Ogni pizzaiolo prepara una pizza alla volta: l'app tiene conto sia del banco sia del forno. Se in certe ore lavorano più o meno persone, aggiungi una fascia; con 0 il banco è chiuso (per esempio una pausa).</p>
-      <div class="grid-gen">${gen('pizzaioli', 'Pizzaioli di solito', 'number', 'min="1"')}</div>
-      <div class="pz-fasce">${(P.pizzaioli_fasce || []).map((x, i) => `<div class="fascia">
-        <input type="time" aria-label="dalle" data-pzf="${i}.da" value="${esc(x.da)}"> – <input type="time" aria-label="alle" data-pzf="${i}.a" value="${esc(x.a)}">
-        <input type="number" min="0" aria-label="pizzaioli" data-pzf="${i}.n" value="${esc(x.n)}" style="width:70px"> pizzaioli
-        <button class="del" data-act="pzfDel" data-i="${i}" aria-label="Togli fascia">×</button></div>`).join('')}
-        <button class="ghost" data-act="pzfAdd">+ Aggiungi fascia oraria</button></div></section>
+    forno: () => `<section class="set-sec"><h2 class="sec-h">Forni</h2>
+      <p class="muted">Ogni forno ha i suoi posti e i suoi pizzaioli, che preparano le pizze solo per quel forno. Scegli se un forno lavora per asporto e tavoli, solo per i tavoli o solo per l'asporto. L'app mette ogni pizza nel forno dove sarà pronta prima, tra quelli accesi e adatti a quell'ordine.</p>
+      <div class="forni">${forni.map(fo => `<div class="forno-c ${fo.attivo ? '' : 'spento'}">
+        <div class="top"><input type="text" class="fo-nome" id="forni-${fo.id}-nome" data-t="forni" data-id="${fo.id}" data-f="nome" value="${esc(fo.nome)}" aria-label="nome del forno">
+          <label class="check"><input type="checkbox" id="forni-${fo.id}-attivo" data-t="forni" data-id="${fo.id}" data-f="attivo" ${fo.attivo ? 'checked' : ''}> Acceso</label></div>
+        <div class="grid-gen">
+          <div class="field"><label class="label" for="forni-${fo.id}-posti">Posti</label><input type="number" min="1" id="forni-${fo.id}-posti" data-t="forni" data-id="${fo.id}" data-f="posti" value="${fo.posti}"></div>
+          <div class="field"><label class="label" for="forni-${fo.id}-pizzaioli">Pizzaioli di solito</label><input type="number" min="0" id="forni-${fo.id}-pizzaioli" data-t="forni" data-id="${fo.id}" data-f="pizzaioli" value="${fo.pizzaioli}"></div>
+          <div class="field"><label class="label" for="forni-${fo.id}-uso">Prepara le pizze per</label><select id="forni-${fo.id}-uso" data-t="forni" data-id="${fo.id}" data-f="uso">${Object.entries(USO).map(([k, l]) => `<option value="${k}" ${fo.uso === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        </div>
+        <div class="pz-fasce"><span class="label">Pizzaioli in certe ore</span>${(fo.pizzaioli_fasce || []).map((x, i) => `<div class="fascia">
+          <input type="time" aria-label="dalle" data-fz="${fo.id}.${i}.da" value="${esc(x.da)}"> – <input type="time" aria-label="alle" data-fz="${fo.id}.${i}.a" value="${esc(x.a)}">
+          <input type="number" min="0" aria-label="pizzaioli" data-fz="${fo.id}.${i}.n" value="${esc(x.n)}" style="width:70px"> pizzaioli
+          <button class="del" data-act="fzDel" data-f="${fo.id}" data-i="${i}" aria-label="Togli fascia">×</button></div>`).join('')}
+          <button class="ghost small" data-act="fzAdd" data-f="${fo.id}">+ Fascia oraria</button></div>
+        <button class="del ${conferma === fo.id ? 'sure' : ''} fo-del" data-act="del" data-t="forni" data-id="${fo.id}">${conferma === fo.id ? 'Eliminare il forno?' : 'Elimina forno'}</button>
+      </div>`).join('')}</div>
+      <button class="ghost add" data-act="addForno">+ Aggiungi forno</button></section>
+      <section class="set-sec"><h2 class="sec-h">Margine</h2>
+      <p class="muted">Minuti che si aggiungono a ogni orario di ritiro per stare larghi.</p>
+      <div class="grid-gen">${gen('margine_minuti', 'Margine di sicurezza (min)', 'number', 'min="0"')}</div></section>
       <section class="set-sec"><h2 class="sec-h">Formati</h2>
       <p class="muted">Preparazione: tempo medio di un pizzaiolo per stendere e condire una pizza. Cottura: quanto resta nel forno. Puoi usare i decimali, per esempio 1,5 per un minuto e mezzo. I posti dicono quanto spazio occupa nel forno: con 6 posti entrano 6 normali oppure 3 famiglia. Il supplemento si aggiunge al prezzo di listino; il moltiplicatore si applica al prezzo degli ingredienti aggiunti.</p>
       <div class="tbl-wrap"><table><thead><tr><th>Nome</th><th>Preparazione (min)</th><th>Cottura (min)</th><th>Posti nel forno</th><th>Supplemento €</th><th>× aggiunte</th><th>Attivo</th><th></th></tr></thead><tbody>${formati}</tbody></table></div>
@@ -393,6 +413,91 @@ function vFedelta(parte) {
       <div class="tbl-wrap"><table><thead><tr><th>Codice</th><th>Tipo</th><th>Valore</th><th>Ordine minimo €</th><th>Scadenza</th><th>Usi massimi</th><th>Attivo</th><th></th></tr></thead><tbody>${cod || '<tr><td colspan="8" class="muted">Nessun codice.</td></tr>'}</tbody></table></div>
       <button class="ghost add" data-act="add" data-t="codici_sconto">+ Nuovo codice</button>` : ''}
     </section>`;
+}
+
+/* ---------- ingrediente finito: sostituire o togliere le pizze ---------- */
+async function cambiaDisponibile(t) {
+  const g = D.ingredienti.find(x => x.id === t.dataset.id); if (!g) return;
+  if (!t.checked) {
+    const coinvolte = D.pizze.filter(p => p.attiva && ingrDi(p.id).includes(g.id));
+    if (!coinvolte.length) return salvaDisp(g, false);
+    modIngr = { tipo: 'finito', g, scelte: Object.fromEntries(coinvolte.map(p => [p.id, { azione: 'togli', con: '' }])) };
+  } else {
+    const fatte = (D.sostituzioni || []).filter(s => s.originale_id === g.id);
+    if (!fatte.length) return salvaDisp(g, true);
+    modIngr = { tipo: 'tornato', g, fatte };
+  }
+  renderIngr();
+}
+async function salvaDisp(g, v) {
+  if (!(await salva('ingredienti', g.id, { disponibile: v }))) { render(); return false; }
+  g.disponibile = v; render(); return true;
+}
+function renderIngr() {
+  const m = $('#modal2');
+  if (!modIngr) { m.innerHTML = ''; return; }
+  const g = modIngr.g, nomeP = id => D.pizze.find(p => p.id === id)?.nome || 'Pizza';
+  let corpo;
+  if (modIngr.tipo === 'finito') {
+    const alternative = D.ingredienti.filter(x => x.disponibile && x.id !== g.id);
+    corpo = `<span class="label">Ingrediente finito</span><h2 class="pin-h">${icona(g)} ${esc(g.nome)}</h2>
+      <p class="muted" style="margin:0">È nelle pizze qui sotto. Per ognuna scegli cosa fare finché non torna: quando lo rimetti disponibile ti propongo di rimettere tutto com'era.</p>
+      <div class="sost">${Object.entries(modIngr.scelte).map(([pid, sc]) => `<div class="sost-r">
+        <b>${esc(nomeP(pid))}</b>
+        <div class="seg">
+          <button class="opt" data-act="sostScelta" data-p="${pid}" data-v="togli" aria-pressed="${sc.azione === 'togli'}">Togli dal listino<small>per ora</small></button>
+          <button class="opt" data-act="sostScelta" data-p="${pid}" data-v="sostituisci" aria-pressed="${sc.azione === 'sostituisci'}">Sostituisci<small>con un altro</small></button>
+          <button class="opt" data-act="sostScelta" data-p="${pid}" data-v="lascia" aria-pressed="${sc.azione === 'lascia'}">Lascia<small>"non disponibile"</small></button>
+        </div>
+        ${sc.azione === 'sostituisci' ? `<select data-sost="${pid}" aria-label="sostituto per ${esc(nomeP(pid))}"><option value="">Scegli l'ingrediente…</option>${alternative.map(x => `<option value="${x.id}" ${sc.con === x.id ? 'selected' : ''}>${icona(x)} ${esc(x.nome)}</option>`).join('')}</select>` : ''}
+      </div>`).join('')}</div>
+      ${modIngr.err ? `<span class="err-msg">${esc(modIngr.err)}</span>` : ''}
+      <div class="acts"><button class="primary" data-act="sostOk" ${modIngr.busy ? 'disabled' : ''}>Conferma</button><button class="ghost" data-act="sostAnnulla">Annulla</button></div>`;
+  } else {
+    corpo = `<span class="label">Ingrediente di nuovo disponibile</span><h2 class="pin-h">${icona(g)} ${esc(g.nome)}</h2>
+      <p class="muted" style="margin:0">Mentre mancava avevi cambiato queste pizze. Le rimetto com'erano?</p>
+      <ul class="sost-l">${modIngr.fatte.map(s => `<li><b>${esc(nomeP(s.pizza_id))}</b>: ${s.tipo === 'tolta' ? 'tolta dal listino' : `sostituito con ${esc(D.ingredienti.find(x => x.id === s.sostituto_id)?.nome || 'un altro ingrediente')}`}</li>`).join('')}</ul>
+      <div class="acts"><button class="primary" data-act="ripristina" ${modIngr.busy ? 'disabled' : ''}>Sì, rimetti com'erano</button><button class="ghost" data-act="ripristinaNo">No, lascia così</button></div>`;
+  }
+  m.innerHTML = `<div class="overlay"><div class="done pin-box ingr-box" role="dialog" aria-label="Ingrediente">${corpo}</div></div>`;
+}
+async function applicaFinito() {
+  const g = modIngr.g, scelte = Object.entries(modIngr.scelte);
+  if (scelte.some(([, s]) => s.azione === 'sostituisci' && !s.con)) { modIngr.err = 'Scegli il sostituto per ogni pizza dove hai scelto "Sostituisci"'; return renderIngr(); }
+  modIngr.busy = true; renderIngr();
+  try {
+    for (const [pid, s] of scelte) {
+      if (s.azione === 'togli') {
+        const a = await sb.from('pizze').update({ attiva: false }).eq('id', pid); if (a.error) throw a.error;
+        const b = await sb.from('sostituzioni').insert({ pizzeria_id: P.id, pizza_id: pid, originale_id: g.id, tipo: 'tolta' }).select().single(); if (b.error) throw b.error;
+        D.pizze.find(p => p.id === pid).attiva = false; D.sostituzioni.push(b.data);
+      } else if (s.azione === 'sostituisci') {
+        const giaC = D.pi.some(x => x.pizza_id === pid && x.ingrediente_id === s.con);
+        const a = await sb.from('pizza_ingredienti').delete().eq('pizza_id', pid).eq('ingrediente_id', g.id); if (a.error) throw a.error;
+        if (!giaC) { const c = await sb.from('pizza_ingredienti').insert({ pizza_id: pid, ingrediente_id: s.con }); if (c.error) throw c.error; }
+        const b = await sb.from('sostituzioni').insert({ pizzeria_id: P.id, pizza_id: pid, originale_id: g.id, sostituto_id: giaC ? null : s.con, tipo: 'sostituito' }).select().single(); if (b.error) throw b.error;
+        D.pi = D.pi.filter(x => !(x.pizza_id === pid && x.ingrediente_id === g.id)); if (!giaC) D.pi.push({ pizza_id: pid, ingrediente_id: s.con }); D.sostituzioni.push(b.data);
+      }
+    }
+    modIngr = null; renderIngr(); await salvaDisp(g, false); toast(`${g.nome} segnato come finito`);
+  } catch (e) { modIngr.busy = false; modIngr.err = msgErr(e); renderIngr(); }
+}
+async function applicaRitorno(rimetti) {
+  const g = modIngr.g; modIngr.busy = true; renderIngr();
+  try {
+    for (const s of modIngr.fatte) {
+      if (rimetti) {
+        if (s.tipo === 'tolta') { const a = await sb.from('pizze').update({ attiva: true }).eq('id', s.pizza_id); if (a.error) throw a.error; const p = D.pizze.find(x => x.id === s.pizza_id); if (p) p.attiva = true; }
+        else {
+          if (s.sostituto_id) { await sb.from('pizza_ingredienti').delete().eq('pizza_id', s.pizza_id).eq('ingrediente_id', s.sostituto_id); D.pi = D.pi.filter(x => !(x.pizza_id === s.pizza_id && x.ingrediente_id === s.sostituto_id)); }
+          if (!D.pi.some(x => x.pizza_id === s.pizza_id && x.ingrediente_id === g.id)) { const c = await sb.from('pizza_ingredienti').insert({ pizza_id: s.pizza_id, ingrediente_id: g.id }); if (c.error) throw c.error; D.pi.push({ pizza_id: s.pizza_id, ingrediente_id: g.id }); }
+        }
+      }
+      await sb.from('sostituzioni').delete().eq('id', s.id);
+    }
+    D.sostituzioni = D.sostituzioni.filter(s => s.originale_id !== g.id);
+    modIngr = null; renderIngr(); await salvaDisp(g, true); toast(rimetti ? `${g.nome} di nuovo disponibile: pizze rimesse com'erano` : `${g.nome} di nuovo disponibile`);
+  } catch (e) { modIngr.busy = false; renderIngr(); toast(msgErr(e), true); }
 }
 
 /* ---------- clienti ---------- */
@@ -619,6 +724,18 @@ const ACT = {
     P.fedelta.giorni_doppi.giorni = arr.includes(g) ? arr.filter(x => x !== g) : [...arr, g].sort();
     if (await salva('pizzerie', P.id, { fedelta: P.fedelta })) render();
   },
+  sostScelta: d => { modIngr.scelte[d.p].azione = d.v; modIngr.err = ''; renderIngr(); },
+  sostOk: () => applicaFinito(),
+  sostAnnulla: () => { modIngr = null; renderIngr(); render(); },
+  ripristina: () => applicaRitorno(true),
+  ripristinaNo: () => applicaRitorno(false),
+  addForno: async () => {
+    const { data, error } = await sb.from('forni').insert({ pizzeria_id: P.id, nome: `Forno ${forni.length + 1}`, posti: 6, pizzaioli: 1, uso: 'tutti', ordine: forni.length + 1 }).select().single();
+    if (error) return toast(msgErr(error), true);
+    forni.push(data); D.forni = forni; render(); toast('Forno aggiunto');
+  },
+  fzAdd: async d => { const fo = forni.find(x => x.id === d.f); fo.pizzaioli_fasce = [...(fo.pizzaioli_fasce || []), { da: '19:30', a: '22:00', n: 2 }]; if (await salva('forni', fo.id, { pizzaioli_fasce: fo.pizzaioli_fasce })) render(); },
+  fzDel: async d => { const fo = forni.find(x => x.id === d.f); fo.pizzaioli_fasce.splice(+d.i, 1); if (await salva('forni', fo.id, { pizzaioli_fasce: fo.pizzaioli_fasce })) render(); },
   pzfAdd: async () => { P.pizzaioli_fasce = [...(P.pizzaioli_fasce || []), { da: '19:30', a: '22:00', n: 2 }]; if (await salva('pizzerie', P.id, { pizzaioli_fasce: P.pizzaioli_fasce })) render(); },
   pzfDel: async d => { P.pizzaioli_fasce.splice(+d.i, 1); if (await salva('pizzerie', P.id, { pizzaioli_fasce: P.pizzaioli_fasce })) render(); },
   fasciaAdd: async () => { P.fedelta.fasce.fasce = [...(P.fedelta.fasce.fasce || []), { da: '18:00', a: '19:00', perc: 10 }]; if (await salva('pizzerie', P.id, { fedelta: P.fedelta })) render(); },
@@ -659,6 +776,7 @@ const ACT = {
     D[d.t] = D[d.t].filter(x => x.id !== d.id);
     if (d.t === 'addetti') addetti = D.addetti;
     if (d.t === 'tavoli') tavoli = D.tavoli;
+    if (d.t === 'forni') forni = D.forni;
     if (d.t === 'ingredienti') D.pi = D.pi.filter(x => x.ingrediente_id !== d.id);
     render(); toast('Eliminato');
   },
@@ -704,6 +822,15 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', async e => {
   const t = e.target;
+  if (t.dataset.sost) { modIngr.scelte[t.dataset.sost].con = t.value; modIngr.err = ''; return; }
+  if (t.dataset.fz) {
+    const [fid, i, k] = t.dataset.fz.split('.'); const fo = forni.find(x => x.id === fid);
+    if (!fo || !fo.pizzaioli_fasce[+i]) return;
+    fo.pizzaioli_fasce[+i][k] = k === 'n' ? Math.max(0, Math.round(+t.value || 0)) : t.value;
+    await salva('forni', fo.id, { pizzaioli_fasce: fo.pizzaioli_fasce });
+    return;
+  }
+  if (t.dataset.t === 'ingredienti' && t.dataset.f === 'disponibile') return cambiaDisponibile(t);
   if (t.dataset.pzf) {
     const [i, k] = t.dataset.pzf.split('.');
     const v = k === 'n' ? Math.max(0, Math.round(+t.value || 0)) : t.value;
@@ -731,7 +858,7 @@ document.addEventListener('change', async e => {
   const ok = await salva(t.dataset.t, t.dataset.id, { [t.dataset.f]: val });
   if (!ok) return;
   if (t.dataset.t === 'pizzerie') { P[t.dataset.f] = val; $('#brand').textContent = P.nome; if (t.dataset.f === 'capacita_forno') render(); }
-  else { const row = D[t.dataset.t].find(x => x.id === t.dataset.id); if (row) row[t.dataset.f] = val; if (t.dataset.f === 'posti') render(); }
+  else { const row = D[t.dataset.t].find(x => x.id === t.dataset.id); if (row) row[t.dataset.f] = val; if (t.dataset.f === 'posti' || t.dataset.t === 'forni') render(); }
 });
 // aggiorna i minuti mancanti ogni 30 secondi
 setInterval(() => { if (P && view === 'coda' && !conferma) render(); }, 30000);
