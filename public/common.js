@@ -38,3 +38,7 @@ async function invoca(nome, body) {
   try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch (e) { }
   return { error: msg };
 }
+// QR code in SVG (libreria qrcode-generator); se non è caricata restituisce vuoto
+function qrSVG(testo) {
+  try { const q = window.qrcode(0, 'M'); q.addData(testo); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); } catch (e) { return ''; }
+}

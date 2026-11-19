@@ -20,6 +20,7 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script src="common.js"></script>
 <script src="pizza-art.js"></script>
 <script>
@@ -29,6 +30,8 @@ let visti = null, stripeBusy = false;
 let clienti = [], topPers = [], filtroCli = 'tutti', cercaCli = '';
 let authMode = 'login', authMsg = '', authBusy = false;
 // ruolo: 'gestore' = titolare (vede tutto), 'banco' = tablet del banco (solo la coda)
+let tavoli = [];
+const nomeTavolo = id => tavoli.find(t => t.id === id)?.nome || 'Tavolo';
 let RUOLO = null, addetti = [], accessi = [], pinMod = null, prod = null, periodo = 'oggi';
 const TITOLARE = () => RUOLO === 'gestore';
 const nomeAddetto = id => addetti.find(a => a.id === id)?.nome || '';
@@ -92,6 +95,8 @@ async function caricaAddetti() {
   const { data, error } = await sb.from('addetti').select('id, pizzeria_id, nome, attivo').eq('pizzeria_id', P.id).order('nome');
   if (error) { toast(msgErr(error), true); return; }
   addetti = data; D.addetti = addetti;
+  const tv = await sb.from('tavoli').select('id, pizzeria_id, nome, codice, attivo, ordine').eq('pizzeria_id', P.id).order('ordine').order('nome');
+  if (!tv.error) { tavoli = tv.data; D.tavoli = tavoli; }
 }
 // Finestra "Chi inizia?": il pizzaiolo sceglie il suo nome e scrive il PIN
 function renderPin() {
@@ -197,18 +202,20 @@ function vCoda() {
   const next = { ricevuto: ['preparazione', 'Inizia'], preparazione: ['pronto', 'Segna pronto'], pronto: ['ritirato', 'Ritirato'] };
   const tk = ordini.map(o => {
     const mins = Math.round((new Date(o.ritiro) - now) / MIN);
-    return `<article class="ticket ${o.stato}">
+    const tav = o.canale === 'tavolo', nx = tav && o.stato === 'pronto' ? ['ritirato', 'Servito'] : next[o.stato];
+    return `<article class="ticket ${o.stato} ${tav ? 'al-tavolo' : ''}">
+      ${tav ? `<span class="tav-badge">🍽️ ${esc(nomeTavolo(o.tavolo_id))}</span>` : ''}
       <div class="top"><span class="n">#${o.numero}</span><span class="pill ${o.stato}">${nomi[o.stato]}</span></div>
       ${o.preparato_da ? `<span class="chi">👨‍🍳 ${esc(nomeAddetto(o.preparato_da) || 'pizzaiolo')} · dalle ${ora(o.iniziato_il)}</span>` : ''}
-      <div class="top"><span><b>${esc(o.nome_cliente)}</b> <span class="muted" style="font-size:12px">${o.canale === 'totem' ? 'totem' : 'online'}</span>${o.telefono ? `<br><span class="muted mono" style="font-size:12px">${esc(o.telefono)}</span>` : ''}</span>
+      <div class="top"><span><b>${esc(o.nome_cliente)}</b> <span class="muted" style="font-size:12px">${tav ? 'in sala' : o.canale === 'totem' ? 'totem' : 'online'}</span>${o.telefono ? `<br><span class="muted mono" style="font-size:12px">${esc(o.telefono)}</span>` : ''}</span>
         <span class="rit">${ora(o.ritiro)}<br><span class="muted" style="font-size:12px;font-family:var(--f-body)">${mins > 0 ? 'tra ' + mins + ' min' : mins === 0 ? 'adesso' : 'da ' + (-mins) + ' min'}</span></span></div>
       <ul>${o.righe_ordine.map(r => {
         const det = [r.formato_nome, r.impasto_nome && r.impasto_nome !== 'Classico' ? r.impasto_nome : '',
           r.aggiunte.length ? '+ ' + r.aggiunte.map(x => x.nome).join(', ') : '', r.tolti.length ? 'senza ' + r.tolti.map(x => x.nome).join(', ') : ''].filter(Boolean).join(' · ');
         return `<li>${r.quantita}× ${esc(r.nome)}<small>${esc(det)}</small></li>`; }).join('')}</ul>
       ${(o.sconti || []).length ? `<div class="sconti-t">${o.sconti.map(x => `<span>${esc(x.descrizione)} −${eur(x.importo)}</span>`).join('')}</div>` : ''}
-      <div class="top"><span class="pill ${o.pagato ? 'pronto' : ''}">${o.pagato ? 'Pagato online' : 'Da pagare'}</span><span class="mono">${eur(o.totale)}</span></div>
-      <div class="acts"><button class="primary" data-act="stato" data-id="${o.id}" data-s="${next[o.stato][0]}">${next[o.stato][1]}</button>
+      <div class="top"><span class="pill ${o.pagato ? 'pronto' : ''}">${o.pagato ? 'Pagato online' : tav ? 'Paga alla cassa' : 'Da pagare'}</span><span class="mono">${eur(o.totale)}</span></div>
+      <div class="acts"><button class="primary" data-act="stato" data-id="${o.id}" data-s="${nx[0]}">${nx[1]}</button>
         <button class="ghost danger" data-act="annulla" data-id="${o.id}">${conferma === o.id ? 'Tocca di nuovo per annullare' : 'Annulla'}</button></div>
     </article>`;
   }).join('');
@@ -240,7 +247,7 @@ async function caricaImpostazioni() {
 const ingrDi = id => D.pi.filter(x => x.pizza_id === id).map(x => x.ingrediente_id);
 const nomeIngr = id => D.ingredienti.find(g => g.id === id)?.nome || '';
 
-const SCHEDE_IMP = [['generale', 'Pizzeria'], ['forno', 'Forno e formati'], ['persone', 'Pizzaioli e accessi'], ['listino', 'Listino'], ['ingredienti', 'Ingredienti e impasti'],
+const SCHEDE_IMP = [['generale', 'Pizzeria'], ['forno', 'Forno e formati'], ['persone', 'Pizzaioli e accessi'], ['sala', 'Sala e tavoli'], ['listino', 'Listino'], ['ingredienti', 'Ingredienti e impasti'],
   ['pagamenti', 'Pagamenti'], ['offerte', 'Fedeltà e offerte'], ['whatsapp', 'Messaggi WhatsApp']];
 let impTab = lsGet('pz_imp_tab') || 'generale';
 function vImp() {
@@ -298,6 +305,7 @@ function vImp() {
       <label class="check"><input type="checkbox" id="p-sconto_tolti" data-t="pizzerie" data-id="${P.id}" data-f="sconto_tolti" ${P.sconto_tolti ? 'checked' : ''}>
         <span>Se il cliente toglie un ingrediente da una pizza del listino, il prezzo scende del costo di quell'ingrediente</span></label></section>`,
     persone: vPersone,
+    sala: vSala,
     ingredienti: () => `<section class="set-sec"><h2 class="sec-h">Ingredienti</h2>
       <p class="muted">Il prezzo è quello dell'aggiunta su una pizza normale. Togli la spunta quando un ingrediente finisce: sparisce dalle scelte e le pizze che lo usano risultano non disponibili.</p>
       <div class="tbl-wrap"><table><thead><tr><th>Icona</th><th>Nome</th><th>Categoria</th><th>Prezzo €</th><th>Disponibile</th><th></th></tr></thead><tbody>${ingr}</tbody></table></div>
@@ -433,6 +441,24 @@ async function caricaAccessi() {
   if (error) { toast(msgErr(error), true); return; }
   accessi = data || [];
 }
+const linkTavolo = t => location.href.replace(/gestione\.html.*$/, '') + '?p=' + encodeURIComponent(P.slug) + '&tavolo=' + t.codice;
+function vSala() {
+  const righe = tavoli.map(t => `<tr>
+    <td style="width:76px"><span class="qr-mini">${qrSVG(linkTavolo(t))}</span></td>
+    <td><input type="text" id="tavoli-${t.id}-nome" data-t="tavoli" data-id="${t.id}" data-f="nome" value="${esc(t.nome)}" aria-label="nome del tavolo"></td>
+    <td><a class="ghost small" href="${esc(linkTavolo(t))}" target="_blank" rel="noopener">Prova</a></td>
+    <td class="c"><input type="checkbox" data-t="tavoli" data-id="${t.id}" data-f="attivo" ${t.attivo ? 'checked' : ''} aria-label="attivo"></td>
+    <td class="c"><button class="del ${conferma === t.id ? 'sure' : ''}" data-act="del" data-t="tavoli" data-id="${t.id}" aria-label="Elimina">${conferma === t.id ? 'Elimina?' : '×'}</button></td></tr>`).join('');
+  return `<section class="set-sec"><h2 class="sec-h">Ordini al tavolo</h2>
+    <label class="check"><input type="checkbox" id="p-servizio_tavolo" data-t="pizzerie" data-id="${P.id}" data-f="servizio_tavolo" ${P.servizio_tavolo ? 'checked' : ''}>
+      <span><b>Accetta ordini dai tavoli</b><br><span class="muted" style="font-size:13px">Chi è seduto inquadra il QR sul tavolo e ordina dal telefono. Gli ordini entrano nella stessa coda del forno di asporto e totem, quindi anche gli orari di ritiro dei clienti da asporto ne tengono conto. Al tavolo non valgono tessera a timbri e offerte, e si paga alla cassa.</span></span></label></section>
+    <section class="set-sec"><h2 class="sec-h">Tavoli</h2>
+    <p class="muted">Ogni tavolo ha il suo QR: stampalo e mettilo sul tavolo. Se togli la spunta, quel QR smette di funzionare.</p>
+    <div class="tbl-wrap"><table><thead><tr><th>QR</th><th>Nome</th><th></th><th>Attivo</th><th></th></tr></thead><tbody>${righe || '<tr><td colspan="5" class="muted">Nessun tavolo.</td></tr>'}</tbody></table></div>
+    <div class="acc-add"><input id="nuovi-tavoli" type="number" min="1" max="60" value="${tavoli.length ? 1 : 10}" aria-label="quanti tavoli aggiungere" style="max-width:90px">
+      <button class="ghost" data-act="addTavoli">+ Aggiungi tavoli</button>
+      ${tavoli.length ? '<button class="ghost" data-act="stampaQr">Stampa i QR</button>' : ''}</div></section>`;
+}
 function vPersone() {
   if (!vPersone.caricato) { vPersone.caricato = true; caricaAccessi().then(render); }
   const righe = addetti.map(a => `<tr>
@@ -513,6 +539,25 @@ const ACT = {
     const g = +d.g, arr = P.giorni_chiusura || [];
     const nuovo = arr.includes(g) ? arr.filter(x => x !== g) : [...arr, g].sort();
     if (await salva('pizzerie', P.id, { giorni_chiusura: nuovo })) { P.giorni_chiusura = nuovo; render(); }
+  },
+  addTavoli: async () => {
+    const n = Math.max(1, Math.min(60, Math.round(+$('#nuovi-tavoli').value || 1)));
+    const base = tavoli.reduce((m, t) => Math.max(m, +(t.nome.match(/\d+/) || [0])[0]), 0);
+    const nuovi = Array.from({ length: n }, (_, i) => ({ pizzeria_id: P.id, nome: `Tavolo ${base + i + 1}`, ordine: base + i + 1 }));
+    const { data, error } = await sb.from('tavoli').insert(nuovi).select('id, pizzeria_id, nome, codice, attivo, ordine');
+    if (error) return toast(msgErr(error), true);
+    tavoli.push(...data); D.tavoli = tavoli; render(); toast(`${data.length} tavoli aggiunti`);
+  },
+  stampaQr: () => {
+    const w = window.open('', '_blank');
+    if (!w) return toast('Il browser ha bloccato la finestra di stampa: consentila e riprova', true);
+    const carte = tavoli.filter(t => t.attivo).map(t => `<div class="c"><div class="t">${esc(t.nome)}</div>${qrSVG(linkTavolo(t))}<div class="s">Inquadra e ordina dal tavolo</div><div class="p">${esc(P.nome)}</div></div>`).join('');
+    w.document.write(`<!doctype html><html lang="it"><head><meta charset="utf-8"><title>QR dei tavoli · ${esc(P.nome)}</title><style>
+      body{font-family:system-ui,sans-serif;margin:0;padding:10mm}.g{display:grid;grid-template-columns:repeat(3,1fr);gap:8mm}
+      .c{border:1px dashed #bbb;border-radius:4mm;padding:6mm;text-align:center;break-inside:avoid}.c svg{width:45mm;height:45mm}
+      .t{font-size:22pt;font-weight:800}.s{font-size:11pt;margin-top:2mm}.p{font-size:9pt;color:#666}</style></head><body><div class="g">${carte}</div>
+      <script>window.onload=()=>window.print()<\/script></body></html>`);
+    w.document.close();
   },
   addAddetto: async () => {
     const { data, error } = await sb.from('addetti').insert({ pizzeria_id: P.id, nome: 'Nuovo pizzaiolo' }).select('id, pizzeria_id, nome, attivo').single();
@@ -613,6 +658,7 @@ const ACT = {
     if (error) return toast(msgErr(error), true);
     D[d.t] = D[d.t].filter(x => x.id !== d.id);
     if (d.t === 'addetti') addetti = D.addetti;
+    if (d.t === 'tavoli') tavoli = D.tavoli;
     if (d.t === 'ingredienti') D.pi = D.pi.filter(x => x.ingrediente_id !== d.id);
     render(); toast('Eliminato');
   },
